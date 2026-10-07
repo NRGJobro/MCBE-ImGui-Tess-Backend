@@ -1,0 +1,10 @@
+build/
+.vs/
+.idea/
+*.user
+*.suo
+*.obj
+*.pdb
+*.dll
+*.lib
+*.exp

@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.21)
+project(mcbe_imgui_tess LANGUAGES CXX)
+
+add_library(mcbe_imgui_tess INTERFACE)
+target_include_directories(mcbe_imgui_tess INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(mcbe_imgui_tess INTERFACE cxx_std_20)
+
+option(MCBE_IMGUI_TESS_BUILD_TESTS "Build lightweight backend tests" ON)
+if(MCBE_IMGUI_TESS_BUILD_TESTS)
+    enable_testing()
+    add_executable(mcbe_imgui_tess_test tests/backend_test.cpp)
+    target_include_directories(mcbe_imgui_tess_test PRIVATE tests)
+    target_link_libraries(mcbe_imgui_tess_test PRIVATE mcbe_imgui_tess)
+    add_test(NAME mcbe_imgui_tess_test COMMAND mcbe_imgui_tess_test)
+endif()
