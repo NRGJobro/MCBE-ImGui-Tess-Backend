@@ -147,17 +147,44 @@ std::int64_t __fastcall levelRendererDetour(
     if (!source)
         return result;
 
+    const Vec3 renderOrigin = renderer->origin();
+    const Vec3 normal{
+        panel.right.y * panel.up.z - panel.right.z * panel.up.y,
+        panel.right.z * panel.up.x - panel.right.x * panel.up.z,
+        panel.right.x * panel.up.y - panel.right.y * panel.up.x};
+    const Vec3 toCamera{
+        renderOrigin.x - panel.center.x,
+        renderOrigin.y - panel.center.y,
+        renderOrigin.z - panel.center.z};
+    const float facing =
+        normal.x * toCamera.x +
+        normal.y * toCamera.y +
+        normal.z * toCamera.z;
+
     CrashLog::setStage("worldPanel: Tessellator submit");
-    g_renderer.renderWorldWindow(
-        source->DrawList,
-        source->Pos,
-        source->Size,
-        screen,
-        renderer->origin(),
-        panel.center,
-        panel.right,
-        panel.up,
-        panel.width);
+    if (facing >= 0.f) {
+        g_renderer.renderWorldWindow(
+            source->DrawList,
+            source->Pos,
+            source->Size,
+            screen,
+            renderOrigin,
+            panel.center,
+            panel.right,
+            panel.up,
+            panel.width);
+    } else {
+        const float aspect =
+            source->Size.x > 1.f ? source->Size.y / source->Size.x : 0.55f;
+        g_renderer.renderWorldBack(
+            screen,
+            renderOrigin,
+            panel.center,
+            panel.right,
+            panel.up,
+            panel.width,
+            aspect);
+    }
 
     return result;
 }
