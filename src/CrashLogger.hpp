@@ -189,7 +189,7 @@ inline LONG CALLBACK vectoredHandler(EXCEPTION_POINTERS* exceptionPointers) noex
 
     crashWrite("\r\nStack:\r\n");
     void* frames[48]{};
-    const USHORT frameCount = CaptureStackBackTrace(0, static_cast<DWORD>(std::size(frames)), frames, nullptr);
+    const USHORT frameCount = CaptureStackBackTrace(0, 48, frames, nullptr);
     for (USHORT i = 0; i < frameCount; ++i) {
         char frameName[512]{};
         describeAddress(reinterpret_cast<std::uintptr_t>(frames[i]), frameName, sizeof(frameName));
