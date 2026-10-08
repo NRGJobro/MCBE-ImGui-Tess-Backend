@@ -90,6 +90,15 @@ public:
         material_ = mce::MaterialPtr::createMaterial(HashedString("ui_textured"));
         if (!material_) material_ = mce::MaterialPtr::createMaterial(HashedString("im_gui"));
 
+        // World panel uses a true 3D ScreenContext. sign_text is a textured
+        // world material suited to position/color/UV geometry and should depth
+        // test against blocks; keep conservative fallbacks for version drift.
+        worldMaterial_ = mce::MaterialPtr::createMaterial(HashedString("sign_text"));
+        if (!worldMaterial_)
+            worldMaterial_ = mce::MaterialPtr::createMaterial(HashedString("entity_alphatest"), true);
+        if (!worldMaterial_)
+            worldMaterial_ = material_;
+
         initialized_ = material_ != nullptr;
         CrashLog::setStage(initialized_ ? "backend.initialize: complete" : "backend.initialize: material failed");
         return initialized_;
@@ -102,6 +111,7 @@ public:
         io.BackendRendererName = nullptr;
         io.Fonts->SetTexID(static_cast<ImTextureID>(0));
         material_ = nullptr;
+        worldMaterial_ = nullptr;
         initialized_ = false;
     }
 
@@ -196,6 +206,145 @@ public:
         }
     }
 
+
+    void renderWorldWindow(
+        const ImDrawList* list,
+        const ImVec2& sourcePos,
+        const ImVec2& sourceSize,
+        ScreenContext* screen,
+        const Vec3& renderOrigin,
+        const Vec3& panelCenter,
+        const Vec3& panelRight,
+        const Vec3& panelUp,
+        float panelWidth) {
+
+        CrashLog::setStage("backend.world: validate");
+        if (!initialized_ || !list || !screen || !worldMaterial_ ||
+            sourceSize.x <= 1.f || sourceSize.y <= 1.f ||
+            panelWidth <= 0.01f || list->VtxBuffer.empty() || list->IdxBuffer.empty())
+            return;
+
+        Tessellator* tess = screen->getTessellator();
+        if (!tess || tess->tessellating || tess->overridden)
+            return;
+
+        const float panelHeight = panelWidth * (sourceSize.y / sourceSize.x);
+        const auto toWorldLocal = [&](const ImDrawVert& vertex) -> Vec3 {
+            const float nx = ((vertex.pos.x - sourcePos.x) / sourceSize.x) - 0.5f;
+            const float ny = 0.5f - ((vertex.pos.y - sourcePos.y) / sourceSize.y);
+
+            const Vec3 world{
+                panelCenter.x + panelRight.x * (nx * panelWidth) + panelUp.x * (ny * panelHeight),
+                panelCenter.y + panelRight.y * (nx * panelWidth) + panelUp.y * (ny * panelHeight),
+                panelCenter.z + panelRight.z * (nx * panelWidth) + panelUp.z * (ny * panelHeight)};
+
+            return {
+                world.x - renderOrigin.x,
+                world.y - renderOrigin.y,
+                world.z - renderOrigin.z};
+        };
+
+        int commandIndex = 0;
+        while (commandIndex < list->CmdBuffer.Size) {
+            const ImDrawCmd& first = list->CmdBuffer[commandIndex];
+            if (first.UserCallback || first.ElemCount < 3) {
+                ++commandIndex;
+                continue;
+            }
+
+            ImTextureID texture =
+                first.TextureId ? first.TextureId : toTextureId(&fontTexture_);
+
+            std::uint64_t totalElements = first.ElemCount;
+            int runEnd = commandIndex + 1;
+            for (; runEnd < list->CmdBuffer.Size; ++runEnd) {
+                const ImDrawCmd& next = list->CmdBuffer[runEnd];
+                if (next.UserCallback || next.ElemCount < 3)
+                    break;
+                const ImTextureID nextTexture =
+                    next.TextureId ? next.TextureId : toTextureId(&fontTexture_);
+                if (nextTexture != texture)
+                    break;
+                totalElements += next.ElemCount;
+            }
+
+            // Double-sided geometry makes the proof demo visible when walking
+            // around the back of the panel too.
+            const std::uint64_t doubled = totalElements * 2ull;
+            const int reserve = static_cast<int>(
+                std::min<std::uint64_t>(doubled, static_cast<std::uint64_t>(INT_MAX)));
+
+            tess->begin(mce::PrimitiveMode::TriangleList, reserve);
+            if (!tess->tessellating) {
+                commandIndex = runEnd;
+                continue;
+            }
+
+            tess->meshData.enableField(mce::VertexField::Color);
+            tess->meshData.enableField(mce::VertexField::UV0);
+            tess->isFormatFixed = true;
+
+            auto& positions = tess->meshData.positions;
+            auto& colors = tess->meshData.colors;
+            auto& uvs = tess->meshData.textureUVs[0];
+
+            positions.reserve(positions.size() + static_cast<std::size_t>(reserve));
+            colors.reserve(colors.size() + static_cast<std::size_t>(reserve));
+            uvs.reserve(uvs.size() + static_cast<std::size_t>(reserve));
+
+            const auto emitVertex = [&](const ImDrawVert& vertex) {
+                positions.push_back(toWorldLocal(vertex));
+                colors.push_back(vertex.col);
+                uvs.push_back({vertex.uv.x, vertex.uv.y});
+            };
+
+            for (int emit = commandIndex; emit < runEnd; ++emit) {
+                const ImDrawCmd& cmd = list->CmdBuffer[emit];
+                const ImDrawVert* vertices = list->VtxBuffer.Data + cmd.VtxOffset;
+                const ImDrawIdx* indices = list->IdxBuffer.Data + cmd.IdxOffset;
+                const unsigned usable = cmd.ElemCount - (cmd.ElemCount % 3u);
+
+                for (unsigned i = 0; i < usable; i += 3) {
+                    const ImDrawVert& a = vertices[indices[i + 0]];
+                    const ImDrawVert& b = vertices[indices[i + 1]];
+                    const ImDrawVert& d = vertices[indices[i + 2]];
+
+                    // Front side.
+                    emitVertex(d);
+                    emitVertex(b);
+                    emitVertex(a);
+
+                    // Back side.
+                    emitVertex(a);
+                    emitVertex(b);
+                    emitVertex(d);
+                }
+            }
+
+            tess->count = static_cast<int>(positions.size());
+
+            const auto* clientTexture = fromTextureId(texture);
+            if (!clientTexture || !clientTexture->resourcePointerBlock)
+                clientTexture = &fontTexture_;
+
+            if (clientTexture && clientTexture->resourcePointerBlock) {
+                mce::Mesh mesh{};
+                if (tess->endTransient(mesh)) {
+                    CrashLog::setStage("backend.world: mce::Mesh::_renderMesh");
+                    mesh.renderMesh(
+                        screen->toMeshContext(),
+                        worldMaterial_,
+                        *clientTexture);
+                    tess->reclaimTransient(mesh);
+                }
+            } else {
+                tess->clear();
+            }
+
+            commandIndex = runEnd;
+        }
+    }
+
 private:
     static ImTextureID toTextureId(const mce::ClientTexture* texture) {
         return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(texture));
@@ -281,6 +430,7 @@ private:
 
     bool initialized_{};
     mce::MaterialPtr* material_{};
+    mce::MaterialPtr* worldMaterial_{};
     std::shared_ptr<mce::BedrockTextureData> fontTextureData_{};
     mce::ClientTexture fontTexture_{};
 };
