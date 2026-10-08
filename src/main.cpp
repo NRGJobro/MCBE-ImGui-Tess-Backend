@@ -51,14 +51,15 @@ void drawTestWindow() {
 
 void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     ActiveCall active;
+    CrashLog::RenderScope crashScope;
+    CrashLog::setPointers(ctx);
+    CrashLog::checkpoint("renderDetour: call vanilla original");
 
-    // Let vanilla finish this UI layer first. Crash logging begins only around our code
-    // so unrelated vanilla exceptions do not get mislabeled as backend failures.
+    // Keep the handler active across vanilla too. If our previous Tessellator frame corrupts
+    // state and vanilla faults on the following frame, last-stage.log will still show it.
     if (g_original) g_original(view, ctx);
 
-    CrashLog::RenderScope crashScope;
-    CrashLog::setStage("renderDetour: enter");
-    CrashLog::setPointers(ctx);
+    CrashLog::setStage("renderDetour: enter backend");
 
     if (!g_running.load(std::memory_order_acquire) || !view || !ctx)
         return;
@@ -78,7 +79,15 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
 
     CrashLog::setStage("renderDetour: prepare ImGui frame");
     ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(view->screenScale.x, view->screenScale.y);
+    Vec2 display = view->screenScale;
+    if (ctx->clientInstance) {
+        if (auto* gui = ctx->clientInstance->getGuiData()) {
+            const Vec2 mcResolution = gui->getMcResolution();
+            if (mcResolution.x > 1.f && mcResolution.y > 1.f)
+                display = mcResolution;
+        }
+    }
+    io.DisplaySize = ImVec2(display.x, display.y);
     io.DisplayFramebufferScale = ImVec2(1.f, 1.f);
     io.DeltaTime = std::clamp(view->deltaTime > 0.f ? view->deltaTime : (1.f / 60.f), 1.f / 1000.f, 0.1f);
 
@@ -87,7 +96,7 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     drawTestWindow();
     ImGui::Render();
 
-    CrashLog::setStage("renderDetour: backend render");
+    CrashLog::checkpoint("renderDetour: backend render");
     g_renderer.render(ImGui::GetDrawData(), ctx);
     CrashLog::setStage("renderDetour: complete");
 }
