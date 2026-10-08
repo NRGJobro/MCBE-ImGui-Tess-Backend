@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../MCBE.hpp"
+#include "../../MCBE.hpp"
 
 #include <cstdint>
 #include <vector>
