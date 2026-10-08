@@ -76,6 +76,11 @@ public:
 
 class TextureGroup {
 public:
+    BedrockTexture& uploadTexture(const ResourceLocation& location, cg::ImageBuffer& buffer) {
+        TextureContainer container(buffer);
+        return uploadTexture(location, container, {});
+    }
+
     BedrockTexture& uploadTexture(
         const ResourceLocation& location,
         TextureContainer& container,
