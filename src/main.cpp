@@ -148,9 +148,6 @@ std::int64_t __fastcall levelRendererDetour(
         return result;
 
     const Vec3 renderOrigin = renderer->origin();
-    const float aspect =
-        source->Size.x > 1.f ? source->Size.y / source->Size.x : 0.55f;
-
     CrashLog::setStage("worldPanel: Tessellator submit");
 
     for (const auto& panel : panels) {
@@ -181,16 +178,9 @@ std::int64_t __fastcall levelRendererDetour(
                 panel.right,
                 panel.up,
                 panel.width);
-        } else {
-            g_renderer.renderWorldBack(
-                screen,
-                renderOrigin,
-                panel.center,
-                panel.right,
-                panel.up,
-                panel.width,
-                aspect);
         }
+        // Intentionally render nothing from the rear. This avoids a second
+        // UI-style backing material that could ignore the world depth buffer.
     }
 
     return result;
@@ -329,6 +319,7 @@ void drawTestWindow() {
         ImGui::TextUnformatted("Input source: Minecraft MouseDevice");
         ImGui::TextUnformatted("Drag/resize this window to verify native input.");
         ImGui::Text("World panels: %zu", g_worldPanel.count());
+        ImGui::Text("3D material: %s", g_renderer.worldMaterialName());
         ImGui::TextUnformatted("F6: place another 3D world panel");
         ImGui::TextUnformatted("F7: remove newest world panel");
         ImGui::TextUnformatted("INSERT: show/hide 2D copy   END: uninject");
