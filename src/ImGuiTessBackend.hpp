@@ -44,7 +44,7 @@ public:
         if (!uploaded.texture || !uploaded.texture->clientTexture.resourcePointerBlock) return false;
 
         fontTexture_ = uploaded.texture->clientTexture;
-        io.Fonts->SetTexID(static_cast<ImTextureID>(&fontTexture_));
+        io.Fonts->SetTexID(toTextureId(&fontTexture_));
         io.BackendRendererName = "mcbe_tessellator_26_52";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
@@ -60,7 +60,7 @@ public:
         ImGuiIO& io = ImGui::GetIO();
         io.BackendFlags &= ~ImGuiBackendFlags_RendererHasVtxOffset;
         io.BackendRendererName = nullptr;
-        io.Fonts->SetTexID(nullptr);
+        io.Fonts->SetTexID(static_cast<ImTextureID>(0));
         material_ = nullptr;
         initialized_ = false;
     }
@@ -92,7 +92,7 @@ public:
                     continue;
                 }
 
-                ImTextureID texture = first.TextureId ? first.TextureId : static_cast<ImTextureID>(&fontTexture_);
+                ImTextureID texture = first.TextureId ? first.TextureId : toTextureId(&fontTexture_);
                 std::uint64_t totalElements = first.ElemCount;
                 int runEnd = commandIndex + 1;
 
@@ -100,7 +100,7 @@ public:
                     const ImDrawCmd& next = list->CmdBuffer[runEnd];
                     if (next.UserCallback || next.ElemCount < 3) break;
                     const ClipRect nextClip = makeClip(next.ClipRect, drawData->DisplayPos);
-                    ImTextureID nextTexture = next.TextureId ? next.TextureId : static_cast<ImTextureID>(&fontTexture_);
+                    ImTextureID nextTexture = next.TextureId ? next.TextureId : toTextureId(&fontTexture_);
                     if (!(nextClip == clip) || nextTexture != texture) break;
                     totalElements += next.ElemCount;
                 }
@@ -116,7 +116,7 @@ public:
                 for (int emit = commandIndex; emit < runEnd; ++emit)
                     emitCommand(*tess, *list, list->CmdBuffer[emit], drawData->DisplayPos);
 
-                const auto* clientTexture = static_cast<const mce::ClientTexture*>(texture);
+                const auto* clientTexture = fromTextureId(texture);
                 if (!clientTexture || !clientTexture->resourcePointerBlock)
                     clientTexture = &fontTexture_;
 
@@ -135,6 +135,14 @@ public:
     }
 
 private:
+    static ImTextureID toTextureId(const mce::ClientTexture* texture) {
+        return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(texture));
+    }
+
+    static const mce::ClientTexture* fromTextureId(ImTextureID texture) {
+        return reinterpret_cast<const mce::ClientTexture*>(static_cast<std::uintptr_t>(texture));
+    }
+
     struct ClipRect {
         float left{}, right{}, top{}, bottom{};
         bool valid() const { return right > left && bottom > top; }
