@@ -105,13 +105,13 @@ DWORD WINAPI startup(void* module) {
     CrashLog::install(g_module);
     openConsole();
     std::puts("[MCBE-ImGui-Tess] loading standalone backend...");
-    std::wprintf(L"[MCBE-ImGui-Tess] diagnostics: %ls\\n", CrashLog::directory());
+    std::wprintf(L"[MCBE-ImGui-Tess] diagnostics: %ls\n", CrashLog::directory());
 
-    CrashLog::append("RenderContext: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::renderContext()));
-    CrashLog::append("Mesh::_renderMesh: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::meshRender()));
-    CrashLog::append("RenderMaterialGroup::common: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::materialCommon()));
-    CrashLog::append("TextureGroup::uploadTexture: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::textureUpload()));
-    CrashLog::append("cg::ImageResource::vtable: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::imageResourceVtable()));
+    CrashLog::append("RenderContext: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::renderContext()));
+    CrashLog::append("Mesh::_renderMesh: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::meshRender()));
+    CrashLog::append("RenderMaterialGroup::common: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::materialCommon()));
+    CrashLog::append("TextureGroup::uploadTexture: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::textureUpload()));
+    CrashLog::append("cg::ImageResource::vtable: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::imageResourceVtable()));
 
     CrashLog::setStage("startup: IMGUI_CHECKVERSION");
     IMGUI_CHECKVERSION();
@@ -154,7 +154,7 @@ DWORD WINAPI startup(void* module) {
     g_renderer.shutdown();
     if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
     MH_Uninitialize();
-    CrashLog::append("Clean unload completed.\\r\\n");
+    CrashLog::append("Clean unload completed.\r\n");
     CrashLog::uninstall();
 
     std::puts("[MCBE-ImGui-Tess] unloaded.");
