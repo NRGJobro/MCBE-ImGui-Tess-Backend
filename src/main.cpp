@@ -412,6 +412,11 @@ DWORD WINAPI startup(void* module) {
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
 
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.Colors[ImGuiCol_Separator] = ImVec4(1.f, 1.f, 1.f, 1.f);
+    style.Colors[ImGuiCol_SeparatorHovered] = ImVec4(1.f, 1.f, 1.f, 1.f);
+    style.Colors[ImGuiCol_SeparatorActive] = ImVec4(1.f, 1.f, 1.f, 1.f);
+
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
