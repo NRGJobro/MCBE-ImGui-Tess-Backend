@@ -20,6 +20,9 @@ public:
         if (!signatures::requiredReady()) return false;
 
         CrashLog::setStage("backend.initialize: build font atlas");
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.AntiAliasedLines = false;
+        style.AntiAliasedFill = false;
         ImGuiIO& io = ImGui::GetIO();
         unsigned char* pixels = nullptr;
         int width = 0, height = 0, bytesPerPixel = 0;
@@ -44,7 +47,7 @@ public:
         mce::TextureContainer container(buffer);
 
         ResourceLocation location("imgui_tess/font_atlas_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
-        CrashLog::setStage("backend.initialize: TextureGroup::uploadTexture");
+        CrashLog::checkpoint("backend.initialize: TextureGroup::uploadTexture");
         auto& uploaded = ctx->textureGroup->uploadTexture(
             location, container, std::optional<std::string_view>{"MCBE ImGui Tess font"});
         if (!uploaded.texture || !uploaded.texture->clientTexture.resourcePointerBlock) return false;
@@ -54,9 +57,9 @@ public:
         io.BackendRendererName = "mcbe_tessellator_26_52";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
-        CrashLog::setStage("backend.initialize: create im_gui material");
-        material_ = mce::MaterialPtr::createMaterial(HashedString("im_gui"));
-        if (!material_) material_ = mce::MaterialPtr::createMaterial(HashedString("ui_textured"));
+        CrashLog::checkpoint("backend.initialize: create ui_textured material");
+        material_ = mce::MaterialPtr::createMaterial(HashedString("ui_textured"));
+        if (!material_) material_ = mce::MaterialPtr::createMaterial(HashedString("im_gui"));
 
         initialized_ = material_ != nullptr;
         CrashLog::setStage(initialized_ ? "backend.initialize: complete" : "backend.initialize: material failed");
@@ -80,6 +83,7 @@ public:
         CrashLog::setPointers(ctx);
         if (!initialized_ || !drawData || !ctx || !ctx->screenContext || drawData->CmdListsCount <= 0) return;
         CrashLog::setStage("backend.render: get Tessellator");
+        const float scale = guiScale(ctx);
         auto* tess = ctx->screenContext->getTessellator();
         CrashLog::setPointers(ctx, tess);
         if (!tess || !material_) return;
@@ -98,7 +102,7 @@ public:
                     continue;
                 }
 
-                const ClipRect clip = makeClip(first.ClipRect, drawData->DisplayPos);
+                const ClipRect clip = makeClip(first.ClipRect, drawData->DisplayPos, scale);
                 if (!clip.valid() || first.ElemCount < 3) {
                     ++commandIndex;
                     continue;
@@ -111,14 +115,14 @@ public:
                 for (; runEnd < list->CmdBuffer.Size; ++runEnd) {
                     const ImDrawCmd& next = list->CmdBuffer[runEnd];
                     if (next.UserCallback || next.ElemCount < 3) break;
-                    const ClipRect nextClip = makeClip(next.ClipRect, drawData->DisplayPos);
+                    const ClipRect nextClip = makeClip(next.ClipRect, drawData->DisplayPos, scale);
                     ImTextureID nextTexture = next.TextureId ? next.TextureId : toTextureId(&fontTexture_);
                     if (!(nextClip == clip) || nextTexture != texture) break;
                     totalElements += next.ElemCount;
                 }
 
                 const int reserve = static_cast<int>(std::min<std::uint64_t>(totalElements, INT_MAX));
-                CrashLog::setStage("backend.render: Tessellator::begin");
+                CrashLog::checkpoint("backend.render: Tessellator::begin");
                 tess->begin(mce::PrimitiveMode::TriangleList, reserve);
                 tess->meshData.colors.reserve(tess->meshData.colors.size() + static_cast<std::size_t>(reserve));
                 tess->meshData.textureUVs[0].reserve(tess->meshData.textureUVs[0].size() + static_cast<std::size_t>(reserve));
@@ -129,7 +133,7 @@ public:
 
                 CrashLog::setStage("backend.render: emit ImGui vertices");
                 for (int emit = commandIndex; emit < runEnd; ++emit)
-                    emitCommand(*tess, *list, list->CmdBuffer[emit], drawData->DisplayPos);
+                    emitCommand(*tess, *list, list->CmdBuffer[emit], drawData->DisplayPos, scale);
 
                 const auto* clientTexture = fromTextureId(texture);
                 if (!clientTexture || !clientTexture->resourcePointerBlock)
@@ -139,7 +143,7 @@ public:
                     CrashLog::setStage("backend.render: Tessellator::end");
                     mce::Mesh mesh{};
                     tess->end(mesh);
-                    CrashLog::setStage("backend.render: mce::Mesh::_renderMesh");
+                    CrashLog::checkpoint("backend.render: mce::Mesh::_renderMesh");
                     mesh.renderMesh(ctx->screenContext->toMeshContext(), material_, *clientTexture);
                 } else {
                     tess->clear();
@@ -169,36 +173,46 @@ private:
         }
     };
 
-    static ClipRect makeClip(const ImVec4& value, const ImVec2& displayPos) {
+    static float guiScale(MinecraftUIRenderContext* ctx) {
+        if (!ctx || !ctx->clientInstance)
+            return 1.0f;
+        const auto* gui = ctx->clientInstance->getGuiData();
+        if (!gui)
+            return 1.0f;
+        const float scale = gui->getScale();
+        return (scale > 0.01f && scale < 16.0f) ? scale : 1.0f;
+    }
+
+    static ClipRect makeClip(const ImVec4& value, const ImVec2& displayPos, float scale) {
         return {
-            value.x - displayPos.x,
-            value.z - displayPos.x,
-            value.y - displayPos.y,
-            value.w - displayPos.y
+            (value.x - displayPos.x) / scale,
+            (value.z - displayPos.x) / scale,
+            (value.y - displayPos.y) / scale,
+            (value.w - displayPos.y) / scale
         };
     }
 
-    static void emitCommand(Tessellator& tess, const ImDrawList& list, const ImDrawCmd& cmd, const ImVec2& displayPos) {
+    static void emitCommand(Tessellator& tess, const ImDrawList& list, const ImDrawCmd& cmd, const ImVec2& displayPos, float scale) {
         const ImDrawVert* vertices = list.VtxBuffer.Data + cmd.VtxOffset;
         const ImDrawIdx* indices = list.IdxBuffer.Data + cmd.IdxOffset;
         const unsigned usable = cmd.ElemCount - (cmd.ElemCount % 3u);
 
         for (unsigned i = 0; i < usable; i += 3) {
             // Bedrock's UI material needs the reverse of ImGui's default DX winding.
-            emitVertex(tess, vertices[indices[i + 2]], displayPos);
-            emitVertex(tess, vertices[indices[i + 1]], displayPos);
-            emitVertex(tess, vertices[indices[i + 0]], displayPos);
+            emitVertex(tess, vertices[indices[i + 2]], displayPos, scale);
+            emitVertex(tess, vertices[indices[i + 1]], displayPos, scale);
+            emitVertex(tess, vertices[indices[i + 0]], displayPos, scale);
         }
     }
 
-    static void emitVertex(Tessellator& tess, const ImDrawVert& vertex, const ImVec2& displayPos) {
+    static void emitVertex(Tessellator& tess, const ImDrawVert& vertex, const ImVec2& displayPos, float scale) {
         const std::uint32_t c = vertex.col;
         tess.color(
             static_cast<std::uint8_t>(c & 0xFFu),
             static_cast<std::uint8_t>((c >> 8) & 0xFFu),
             static_cast<std::uint8_t>((c >> 16) & 0xFFu),
             static_cast<std::uint8_t>((c >> 24) & 0xFFu));
-        tess.vertexUV(vertex.pos.x - displayPos.x, vertex.pos.y - displayPos.y, 0.0f, vertex.uv.x, vertex.uv.y);
+        tess.vertexUV((vertex.pos.x - displayPos.x) / scale, (vertex.pos.y - displayPos.y) / scale, 0.0f, vertex.uv.x, vertex.uv.y);
     }
 
     bool initialized_{};
