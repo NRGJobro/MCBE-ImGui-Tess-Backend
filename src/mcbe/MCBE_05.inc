@@ -69,6 +69,28 @@
         }
         clear();
     }
+
+    // ImGui emits fresh transient geometry every frame. Avoid deep-copying all
+    // CPU vertex arrays into Mesh: move them for submission, then reclaim the
+    // vector storage after _renderMesh so capacity is reused next frame.
+    bool endTransient(mce::Mesh& mesh) {
+        if (!bufferResourceService.lock()) {
+            clear();
+            return false;
+        }
+
+        mesh.temporary = true;
+        mesh.primitiveMode = meshData.mode;
+        mesh.bufferResourceService = bufferResourceService;
+        mesh.meshData = std::move(meshData);
+        clear();
+        return true;
+    }
+
+    void reclaimTransient(mce::Mesh& mesh) {
+        meshData = std::move(mesh.meshData);
+        meshData.clear();
+    }
 };
 
 class ScreenContext {
