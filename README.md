@@ -103,3 +103,14 @@ Files:
 
 For a crash report, send `crash-last.log` and `session.log` first. The `Stage:` line is specifically updated around font upload, material creation, Tessellator begin/end, clipping, vertex emission, and `mce::Mesh::_renderMesh`.
 
+
+
+## World-space proof demo
+
+Press **F6** while in-game to place a copy of the ImGui test window three blocks in front of the current rendered camera. The panel is frozen in world coordinates and is submitted through the current 3D `LevelRenderer` `ScreenContext` and Minecraft `Tessellator`.
+
+- **F6** — place/remove the world-space panel
+- **INSERT** — show/hide the normal 2D Tessellator copy
+- **END** — uninject
+
+The world panel reuses the same Dear ImGui draw-list vertices and font atlas as the 2D backend, but transforms each vertex into a 3D `center/right/up` basis before mesh submission. It is not a projected screen-space overlay.
