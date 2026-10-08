@@ -90,6 +90,7 @@ Files:
 - `session.log` — resolved 26.52 signature addresses and normal startup/unload information.
 - `crash-last.log` — the most recent exception, backend stage, MCBE context/Tessellator pointers, registers, and stack addresses.
 - `crash-last.dmp` — a small Windows minidump for crashes that need deeper inspection.
+- `last-stage.log` — disk-flushed checkpoint of the last dangerous render operation. This is written even when Minecraft terminates before the exception logger can produce `crash-last.log`.
 
 For a crash report, send `crash-last.log` and `session.log` first. The `Stage:` line is specifically updated around font upload, material creation, Tessellator begin/end, clipping, vertex emission, and `mce::Mesh::_renderMesh`.
 
