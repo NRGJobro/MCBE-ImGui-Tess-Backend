@@ -32,7 +32,6 @@ add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
 )
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR})
-target_compile_definitions(imgui PRIVATE IMGUI_DISABLE_OBSOLETE_FUNCTIONS=1)
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
@@ -47,10 +46,11 @@ add_library(MCBEImGuiTess SHARED
     src/PatternScanner.hpp
     src/MCBE.hpp
     src/ImGuiTessBackend.hpp
+    src/CrashLogger.hpp
 )
 
 target_include_directories(MCBEImGuiTess PRIVATE src)
-target_link_libraries(MCBEImGuiTess PRIVATE imgui minhook)
+target_link_libraries(MCBEImGuiTess PRIVATE imgui minhook Dbghelp)
 target_compile_definitions(MCBEImGuiTess PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 if(MSVC)
