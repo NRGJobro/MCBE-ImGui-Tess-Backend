@@ -75,16 +75,18 @@ public:
     int pad{};
 };
 
+class RenderMaterialGroup {};
+
 class MaterialPtr {
     char pad_[0x138]{};
 public:
     static MaterialPtr* createMaterial(const HashedString& name) {
-        auto* group = reinterpret_cast<void*>(mcbe::signatures::materialCommon());
-        if (!group) return nullptr;
-        auto** table = *reinterpret_cast<void***>(group);
-        if (!table || !table[1]) return nullptr;
-        using Fn = std::shared_ptr<MaterialPtr>(__fastcall*)(void*, const HashedString&);
-        auto result = reinterpret_cast<Fn>(table[1])(group, name);
+        auto* group = reinterpret_cast<RenderMaterialGroup*>(mcbe::signatures::materialCommon());
+        if (!group)
+            return nullptr;
+
+        auto result = mcbe::abi::callVFunc<1, std::shared_ptr<MaterialPtr>>(
+            group, static_cast<const HashedString&>(name));
         return result.get();
     }
 };
