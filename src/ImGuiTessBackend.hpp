@@ -495,10 +495,18 @@ public:
                         solidPass
                             ? "backend.world: submit fill"
                             : "backend.world: submit text");
-                    mesh.renderMesh(
-                        screen->toMeshContext(),
-                        material,
-                        solidPass ? fontTexture_ : *clientTexture);
+                    if (solidPass) {
+                        // Match Phase's untextured MeshHelpers overload exactly:
+                        // selection_overlay receives zero texture bindings.
+                        mesh.renderMesh(
+                            screen->toMeshContext(),
+                            material);
+                    } else {
+                        mesh.renderMesh(
+                            screen->toMeshContext(),
+                            material,
+                            *clientTexture);
+                    }
                     tess->reclaimTransient(mesh);
                 }
             };
