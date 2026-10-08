@@ -35,7 +35,12 @@ inline void setStage(const char* stage) noexcept {
 
 inline void checkpoint(const char* stage) noexcept {
     setStage(stage);
-    if (g_checkpointBudget.fetch_sub(1, std::memory_order_relaxed) == 0)
+    unsigned remaining = g_checkpointBudget.load(std::memory_order_relaxed);
+    while (remaining > 0 &&
+           !g_checkpointBudget.compare_exchange_weak(
+               remaining, remaining - 1,
+               std::memory_order_relaxed, std::memory_order_relaxed)) {}
+    if (remaining == 0)
         return;
 
     char line[1024]{};
