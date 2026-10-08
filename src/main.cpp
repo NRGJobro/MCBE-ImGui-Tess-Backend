@@ -90,9 +90,10 @@ RenderOwner g_renderOwner{};
 
 HWND findMinecraftWindow() {
     const DWORD pid = GetCurrentProcessId();
+    const HWND console = GetConsoleWindow();
 
     HWND foreground = GetForegroundWindow();
-    if (foreground) {
+    if (foreground && foreground != console) {
         DWORD windowPid = 0;
         GetWindowThreadProcessId(foreground, &windowPid);
         if (windowPid == pid)
@@ -101,42 +102,77 @@ HWND findMinecraftWindow() {
 
     struct Search {
         DWORD pid{};
+        HWND console{};
         HWND window{};
-    } search{pid, nullptr};
+        long long bestArea{};
+    } search{pid, console, nullptr, 0};
 
     EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
         auto* state = reinterpret_cast<Search*>(param);
+        if (!state || hwnd == state->console || !IsWindowVisible(hwnd))
+            return TRUE;
+
         DWORD windowPid = 0;
         GetWindowThreadProcessId(hwnd, &windowPid);
-        if (windowPid != state->pid || !IsWindowVisible(hwnd))
+        if (windowPid != state->pid)
             return TRUE;
 
         RECT rect{};
-        if (!GetClientRect(hwnd, &rect) ||
-            rect.right - rect.left < 320 ||
-            rect.bottom - rect.top < 200)
+        if (!GetClientRect(hwnd, &rect))
             return TRUE;
 
-        state->window = hwnd;
-        return FALSE;
+        const long long width = rect.right - rect.left;
+        const long long height = rect.bottom - rect.top;
+        if (width < 320 || height < 200)
+            return TRUE;
+
+        const long long area = width * height;
+        if (area > state->bestArea) {
+            state->bestArea = area;
+            state->window = hwnd;
+        }
+        return TRUE;
     }, reinterpret_cast<LPARAM>(&search));
 
     return search.window;
 }
 
 bool initializePlatform(HWND hwnd) {
-    if (!hwnd || !ImGui::GetCurrentContext())
+    if (!hwnd || hwnd == GetConsoleWindow() || !ImGui::GetCurrentContext())
         return false;
 
-    if (g_platformReady.load(std::memory_order_acquire))
-        return g_platformWindow == hwnd;
+    const bool ready = g_platformReady.load(std::memory_order_acquire);
+    if (ready && g_platformWindow == hwnd)
+        return true;
+
+    // MainWindow::_windowProcCallback is the authoritative source of Minecraft's
+    // HWND. If an earlier fallback ever selected a different same-process window,
+    // tear down the Win32 platform backend and migrate it to the real game HWND.
+    if (ready) {
+        CrashLog::append(
+            "Win32 ImGui platform backend migrating: old=%p new=%p\r\n",
+            g_platformWindow, hwnd);
+        ImGui_ImplWin32_Shutdown();
+        g_platformReady.store(false, std::memory_order_release);
+        g_platformWindow = nullptr;
+    }
 
     if (!ImGui_ImplWin32_Init(hwnd))
         return false;
 
     g_platformWindow = hwnd;
     g_platformReady.store(true, std::memory_order_release);
-    CrashLog::append("Win32 ImGui platform backend initialized: hwnd=%p\r\n", hwnd);
+
+    wchar_t title[256]{};
+    GetWindowTextW(hwnd, title, static_cast<int>(std::size(title)));
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    CrashLog::append(
+        "Win32 ImGui platform backend initialized: hwnd=%p client=%ldx%ld title=%ls\r\n",
+        hwnd,
+        client.right - client.left,
+        client.bottom - client.top,
+        title);
     return true;
 }
 
@@ -351,8 +387,12 @@ DWORD WINAPI startup(void* module) {
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    if (HWND hwnd = findMinecraftWindow())
-        (void)initializePlatform(hwnd);
+    // Do not initialize ImGui's Win32 backend here. AllocConsole() creates
+    // another HWND in this process, and startup-time window discovery can bind
+    // ImGui to that console. The Minecraft MainWindow hook below supplies the
+    // authoritative game HWND on its first message.
+    g_platformWindow = nullptr;
+    g_platformReady.store(false, std::memory_order_release);
 
     if (!mcbe::signatures::requiredReady()) {
         std::puts("[MCBE-ImGui-Tess] ERROR: one or more 26.52 renderer signatures were not found.");
