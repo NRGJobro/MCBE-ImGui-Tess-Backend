@@ -152,6 +152,11 @@ inline std::uintptr_t materialCommon() {
         "48 8D 15 ? ? ? ? 4C 8D 45 ? E8 ? ? ? ? 48 8D 4D ? E8 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? 48 8D 0D ? ? ? ? E8 ? ? ? ? E9 ? ? ? ? 48 8D 0D"), 3);
     return value;
 }
+inline std::uintptr_t materialSwitchable() {
+    static const auto value = memory::resolveRip(memory::scan(
+        "48 8D 15 ? ? ? ? 4D 89 F8 E8 ? ? ? ? 4C 89 F9 E8 ? ? ? ? 4C 89 E9 E8 ? ? ? ? 48 8B 85"), 3);
+    return value;
+}
 inline std::uintptr_t textureUpload() {
     static const auto value = memory::scan(
         "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 4D 89 CF 4D 89 C6 48 89 D6 48 89 CB");
@@ -179,6 +184,18 @@ inline std::uintptr_t mouseDevice() {
     // MouseDevice storage itself, matching Phase's current SDK accessor.
     static const auto value = memory::resolveRip(memory::scan(
         "89 15 ? ? ? ? C7 47"), 2);
+    return value;
+}
+inline std::uintptr_t levelRenderer() {
+    // Phase 26.52: LevelRendererHook::levelRendererHookSig.
+    static const auto value = memory::resolveCall(memory::scan(
+        "E8 ? ? ? ? 45 31 E4 48 83 BE"));
+    return value;
+}
+inline std::uintptr_t cameraTick() {
+    // Phase 26.52: CameraOriginHook::tickSig / CameraBlendSystem::tick.
+    static const auto value = memory::scan(
+        "41 57 41 56 41 54 56 57 55 53 48 81 EC ? ? ? ? 44 0F 29 BC 24 ? ? ? ? 44 0F 29 B4 24 ? ? ? ? 44 0F 29 AC 24 ? ? ? ? 44 0F 29 A4 24 ? ? ? ? 44 0F 29 9C 24 ? ? ? ? 44 0F 29 94 24 ? ? ? ? 44 0F 29 8C 24 ? ? ? ? 44 0F 29 44 24 ? 0F 29 7C 24 ? 0F 29 74 24 ? 0F 28 F2");
     return value;
 }
 inline bool requiredReady() {
