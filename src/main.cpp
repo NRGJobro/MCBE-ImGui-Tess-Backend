@@ -5,6 +5,7 @@
 #include "MCBE.hpp"
 #include "CrashLogger.hpp"
 #include "ImGuiTessBackend.hpp"
+#include "WorldPanelDemo.hpp"
 #include "mcbe/Input/MouseDevice.hpp"
 
 #include <algorithm>
@@ -16,11 +17,18 @@ namespace {
 
 using RenderFn = void(__fastcall*)(ScreenView*, MinecraftUIRenderContext*);
 using MouseRefreshFn = void(__fastcall*)(void*);
+using LevelRendererFn = std::int64_t(__fastcall*)(
+    mcbe::world::LevelRenderer*, ScreenContext*, std::int64_t);
+using CameraTickFn = void(__fastcall*)(
+    mcbe::world::CameraComponent*, void*, float);
 
 HMODULE g_module{};
 RenderFn g_originalRender{};
 MouseRefreshFn g_originalMouseRefresh{};
+LevelRendererFn g_originalLevelRenderer{};
+CameraTickFn g_originalCameraTick{};
 mcbe::ImGuiTessBackend g_renderer{};
+mcbe::WorldPanelDemo g_worldPanel{};
 
 std::atomic_bool g_running{true};
 std::atomic_bool g_showWindow{true};
@@ -28,6 +36,8 @@ std::atomic_bool g_guiOwnsMouse{false};
 
 std::atomic_uint g_activeRenderCalls{0};
 std::atomic_uint g_activeMouseCalls{0};
+std::atomic_uint g_activeLevelRenderCalls{0};
+std::atomic_uint g_activeCameraCalls{0};
 
 struct NativeMouseState {
     std::atomic_int x{0};
@@ -47,6 +57,16 @@ struct ActiveRenderCall {
 struct ActiveMouseCall {
     ActiveMouseCall() { g_activeMouseCalls.fetch_add(1, std::memory_order_acq_rel); }
     ~ActiveMouseCall() { g_activeMouseCalls.fetch_sub(1, std::memory_order_acq_rel); }
+};
+
+struct ActiveLevelRenderCall {
+    ActiveLevelRenderCall() { g_activeLevelRenderCalls.fetch_add(1, std::memory_order_acq_rel); }
+    ~ActiveLevelRenderCall() { g_activeLevelRenderCalls.fetch_sub(1, std::memory_order_acq_rel); }
+};
+
+struct ActiveCameraCall {
+    ActiveCameraCall() { g_activeCameraCalls.fetch_add(1, std::memory_order_acq_rel); }
+    ~ActiveCameraCall() { g_activeCameraCalls.fetch_sub(1, std::memory_order_acq_rel); }
 };
 
 // Bedrock invokes RenderContext for multiple UI views per visual frame.
@@ -87,6 +107,60 @@ struct RenderOwner {
 };
 
 RenderOwner g_renderOwner{};
+
+
+void __fastcall cameraTickDetour(
+    mcbe::world::CameraComponent* camera,
+    void* a2,
+    float a3) {
+
+    ActiveCameraCall active;
+
+    if (g_originalCameraTick)
+        g_originalCameraTick(camera, a2, a3);
+
+    if (g_running.load(std::memory_order_acquire))
+        g_worldPanel.updateCamera(camera);
+}
+
+std::int64_t __fastcall levelRendererDetour(
+    mcbe::world::LevelRenderer* renderer,
+    ScreenContext* screen,
+    std::int64_t a3) {
+
+    ActiveLevelRenderCall active;
+
+    const std::int64_t result =
+        g_originalLevelRenderer
+            ? g_originalLevelRenderer(renderer, screen, a3)
+            : 0;
+
+    if (!g_running.load(std::memory_order_acquire) ||
+        !renderer || !screen || !g_renderer.initialized())
+        return result;
+
+    const auto panel = g_worldPanel.consumeTransform();
+    if (!panel.valid)
+        return result;
+
+    ImGuiWindow* source = mcbe::WorldPanelDemo::sourceWindow();
+    if (!source)
+        return result;
+
+    CrashLog::setStage("worldPanel: Tessellator submit");
+    g_renderer.renderWorldWindow(
+        source->DrawList,
+        source->Pos,
+        source->Size,
+        screen,
+        renderer->origin(),
+        panel.center,
+        panel.right,
+        panel.up,
+        panel.width);
+
+    return result;
+}
 
 void updateNativeMouseFromAction(const MouseAction& action, unsigned& buttons, int& wheel) {
     g_mouse.x.store(static_cast<int>(action.x), std::memory_order_relaxed);
@@ -220,7 +294,8 @@ void drawTestWindow() {
         ImGui::Spacing();
         ImGui::TextUnformatted("Input source: Minecraft MouseDevice");
         ImGui::TextUnformatted("Drag/resize this window to verify native input.");
-        ImGui::TextUnformatted("INSERT: show/hide   END: uninject");
+        ImGui::TextUnformatted("F6: place/remove 3D world panel");
+        ImGui::TextUnformatted("INSERT: show/hide 2D copy   END: uninject");
         ImGui::Spacing();
 
         const float pulse =
@@ -245,8 +320,9 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
 
     const bool owner = g_renderOwner.shouldRender(view);
     const bool visible = g_showWindow.load(std::memory_order_relaxed);
+    const bool needImGuiFrame = visible || g_worldPanel.active();
 
-    if (owner && visible && !g_renderer.initialized()) {
+    if (owner && needImGuiFrame && !g_renderer.initialized()) {
         CrashLog::checkpoint("renderDetour: initialize backend");
         (void)g_renderer.initialize(ctx);
     }
@@ -254,7 +330,7 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     if (g_originalRender)
         g_originalRender(view, ctx);
 
-    if (!owner || !visible || !g_renderer.initialized()) {
+    if (!owner || !needImGuiFrame || !g_renderer.initialized()) {
         g_guiOwnsMouse.store(false, std::memory_order_release);
         return;
     }
@@ -269,11 +345,13 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     // Publish capture state to the native mouse thread without touching ImGui
     // from that thread.
     g_guiOwnsMouse.store(
-        ImGui::GetIO().WantCaptureMouse,
+        visible && ImGui::GetIO().WantCaptureMouse,
         std::memory_order_release);
 
-    CrashLog::setStage("renderDetour: Tessellator submit");
-    g_renderer.render(ImGui::GetDrawData(), ctx);
+    if (visible) {
+        CrashLog::setStage("renderDetour: Tessellator submit");
+        g_renderer.render(ImGui::GetDrawData(), ctx);
+    }
     CrashLog::setStage("renderDetour: complete");
 }
 
@@ -288,6 +366,10 @@ DWORD WINAPI startup(void* module) {
         static_cast<unsigned long long>(mcbe::signatures::mouseRefresh()));
     CrashLog::append("MouseDevice: 0x%llX\r\n",
         static_cast<unsigned long long>(mcbe::signatures::mouseDevice()));
+    CrashLog::append("LevelRenderer: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::levelRenderer()));
+    CrashLog::append("CameraBlendSystem::tick: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::cameraTick()));
     CrashLog::append("Mesh::_renderMesh: 0x%llX\r\n",
         static_cast<unsigned long long>(mcbe::signatures::meshRender()));
     CrashLog::append("RenderMaterialGroup::common: 0x%llX\r\n",
@@ -315,6 +397,10 @@ DWORD WINAPI startup(void* module) {
             reinterpret_cast<void*>(mcbe::signatures::renderContext());
         auto* mouseTarget =
             reinterpret_cast<void*>(mcbe::signatures::mouseRefresh());
+        auto* levelTarget =
+            reinterpret_cast<void*>(mcbe::signatures::levelRenderer());
+        auto* cameraTarget =
+            reinterpret_cast<void*>(mcbe::signatures::cameraTick());
 
         const bool renderHookOk =
             renderTarget &&
@@ -334,14 +420,41 @@ DWORD WINAPI startup(void* module) {
                 MH_EnableHook(mouseTarget) == MH_OK;
         }
 
+        bool levelHookOk = false;
+        if (levelTarget) {
+            levelHookOk =
+                MH_CreateHook(
+                    levelTarget,
+                    reinterpret_cast<LPVOID>(&levelRendererDetour),
+                    reinterpret_cast<LPVOID*>(&g_originalLevelRenderer)) == MH_OK &&
+                MH_EnableHook(levelTarget) == MH_OK;
+        }
+
+        bool cameraHookOk = false;
+        if (cameraTarget) {
+            cameraHookOk =
+                MH_CreateHook(
+                    cameraTarget,
+                    reinterpret_cast<LPVOID>(&cameraTickDetour),
+                    reinterpret_cast<LPVOID*>(&g_originalCameraTick)) == MH_OK &&
+                MH_EnableHook(cameraTarget) == MH_OK;
+        }
+
         CrashLog::append(
-            "Hooks: render=%s nativeMouse=%s\r\n",
+            "Hooks: render=%s nativeMouse=%s levelRenderer=%s camera=%s\r\n",
             renderHookOk ? "OK" : "FAILED",
-            mouseHookOk ? "OK" : "FAILED");
+            mouseHookOk ? "OK" : "FAILED",
+            levelHookOk ? "OK" : "FAILED",
+            cameraHookOk ? "OK" : "FAILED");
     }
 
     bool lastInsert = false;
     while ((GetAsyncKeyState(VK_END) & 1) == 0) {
+        if (GetAsyncKeyState(VK_F6) & 1) {
+            g_worldPanel.toggleRequested();
+            CrashLog::append("F6: toggled world panel request.\r\n");
+        }
+
         const bool insert = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
         if (insert && !lastInsert) {
             const bool next =
@@ -363,9 +476,17 @@ DWORD WINAPI startup(void* module) {
     if (auto* mouseTarget =
             reinterpret_cast<void*>(mcbe::signatures::mouseRefresh()))
         MH_DisableHook(mouseTarget);
+    if (auto* levelTarget =
+            reinterpret_cast<void*>(mcbe::signatures::levelRenderer()))
+        MH_DisableHook(levelTarget);
+    if (auto* cameraTarget =
+            reinterpret_cast<void*>(mcbe::signatures::cameraTick()))
+        MH_DisableHook(cameraTarget);
 
     while (g_activeRenderCalls.load(std::memory_order_acquire) != 0 ||
-           g_activeMouseCalls.load(std::memory_order_acquire) != 0)
+           g_activeMouseCalls.load(std::memory_order_acquire) != 0 ||
+           g_activeLevelRenderCalls.load(std::memory_order_acquire) != 0 ||
+           g_activeCameraCalls.load(std::memory_order_acquire) != 0)
         Sleep(1);
 
     if (auto* renderTarget =
@@ -374,6 +495,12 @@ DWORD WINAPI startup(void* module) {
     if (auto* mouseTarget =
             reinterpret_cast<void*>(mcbe::signatures::mouseRefresh()))
         MH_RemoveHook(mouseTarget);
+    if (auto* levelTarget =
+            reinterpret_cast<void*>(mcbe::signatures::levelRenderer()))
+        MH_RemoveHook(levelTarget);
+    if (auto* cameraTarget =
+            reinterpret_cast<void*>(mcbe::signatures::cameraTick()))
+        MH_RemoveHook(cameraTarget);
 
     g_renderer.shutdown();
 
