@@ -2,54 +2,57 @@
 #include <Windows.h>
 #include <MinHook.h>
 #include <imgui.h>
-#include <imgui_impl_win32.h>
 
 #include "MCBE.hpp"
 #include "CrashLogger.hpp"
 #include "ImGuiTessBackend.hpp"
+#include "mcbe/Input/MouseDevice.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <chrono>
-#include <cstdio>
 #include <thread>
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
-    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 namespace {
 
 using RenderFn = void(__fastcall*)(ScreenView*, MinecraftUIRenderContext*);
-using WindowProcFn = LRESULT(__fastcall*)(HWND, UINT, WPARAM, LPARAM);
+using MouseRefreshFn = void(__fastcall*)(void*);
 
 HMODULE g_module{};
-RenderFn g_original{};
-WindowProcFn g_originalWindowProc{};
+RenderFn g_originalRender{};
+MouseRefreshFn g_originalMouseRefresh{};
 mcbe::ImGuiTessBackend g_renderer{};
 
 std::atomic_bool g_running{true};
 std::atomic_bool g_showWindow{true};
-std::atomic_bool g_platformReady{false};
-std::atomic_bool g_windowHookReady{false};
+std::atomic_bool g_guiOwnsMouse{false};
+
 std::atomic_uint g_activeRenderCalls{0};
-std::atomic_uint g_activeWindowCalls{0};
-HWND g_platformWindow{};
+std::atomic_uint g_activeMouseCalls{0};
+
+struct NativeMouseState {
+    std::atomic_int x{0};
+    std::atomic_int y{0};
+    std::atomic_uint buttons{0};
+    std::atomic_int wheel{0};
+    std::atomic_bool seen{false};
+};
+
+NativeMouseState g_mouse{};
 
 struct ActiveRenderCall {
     ActiveRenderCall() { g_activeRenderCalls.fetch_add(1, std::memory_order_acq_rel); }
     ~ActiveRenderCall() { g_activeRenderCalls.fetch_sub(1, std::memory_order_acq_rel); }
 };
 
-struct ActiveWindowCall {
-    ActiveWindowCall() { g_activeWindowCalls.fetch_add(1, std::memory_order_acq_rel); }
-    ~ActiveWindowCall() { g_activeWindowCalls.fetch_sub(1, std::memory_order_acq_rel); }
+struct ActiveMouseCall {
+    ActiveMouseCall() { g_activeMouseCalls.fetch_add(1, std::memory_order_acq_rel); }
+    ~ActiveMouseCall() { g_activeMouseCalls.fetch_sub(1, std::memory_order_acq_rel); }
 };
 
-// Bedrock invokes RenderContext for several UI views during one visual frame.
-// Learn the repeating view order and render on the last view from the previous
-// cycle. This converges after one cycle and avoids submitting ImGui several
-// times per screen frame.
+// Bedrock invokes RenderContext for multiple UI views per visual frame.
+// Learn the repeating view order and submit the ImGui mesh only on one owner
+// pass so native UI layers do not fight each other.
 struct RenderOwner {
     ScreenView* cycleFirst{};
     ScreenView* previous{};
@@ -71,8 +74,6 @@ struct RenderOwner {
             missedOwnerCalls = 0;
         }
 
-        // Screen changes can replace every ScreenView pointer. Re-learn quickly
-        // instead of waiting forever for the old cycle's first pointer.
         if (view == owner) {
             missedOwnerCalls = 0;
         } else if (++missedOwnerCalls > 24) {
@@ -88,188 +89,99 @@ struct RenderOwner {
 
 RenderOwner g_renderOwner{};
 
-HWND findMinecraftWindow() {
-    const DWORD pid = GetCurrentProcessId();
-    const HWND console = GetConsoleWindow();
+void updateNativeMouseFromAction(const MouseAction& action, unsigned& buttons, int& wheel) {
+    g_mouse.x.store(static_cast<int>(action.x), std::memory_order_relaxed);
+    g_mouse.y.store(static_cast<int>(action.y), std::memory_order_relaxed);
 
-    HWND foreground = GetForegroundWindow();
-    if (foreground && foreground != console) {
-        DWORD windowPid = 0;
-        GetWindowThreadProcessId(foreground, &windowPid);
-        if (windowPid == pid)
-            return foreground;
-    }
-
-    struct Search {
-        DWORD pid{};
-        HWND console{};
-        HWND window{};
-        long long bestArea{};
-    } search{pid, console, nullptr, 0};
-
-    EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
-        auto* state = reinterpret_cast<Search*>(param);
-        if (!state || hwnd == state->console || !IsWindowVisible(hwnd))
-            return TRUE;
-
-        DWORD windowPid = 0;
-        GetWindowThreadProcessId(hwnd, &windowPid);
-        if (windowPid != state->pid)
-            return TRUE;
-
-        RECT rect{};
-        if (!GetClientRect(hwnd, &rect))
-            return TRUE;
-
-        const long long width = rect.right - rect.left;
-        const long long height = rect.bottom - rect.top;
-        if (width < 320 || height < 200)
-            return TRUE;
-
-        const long long area = width * height;
-        if (area > state->bestArea) {
-            state->bestArea = area;
-            state->window = hwnd;
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&search));
-
-    return search.window;
-}
-
-bool initializePlatform(HWND hwnd) {
-    if (!hwnd || hwnd == GetConsoleWindow() || !ImGui::GetCurrentContext())
-        return false;
-
-    const bool ready = g_platformReady.load(std::memory_order_acquire);
-    if (ready && g_platformWindow == hwnd)
-        return true;
-
-    // MainWindow::_windowProcCallback is the authoritative source of Minecraft's
-    // HWND. If an earlier fallback ever selected a different same-process window,
-    // tear down the Win32 platform backend and migrate it to the real game HWND.
-    if (ready) {
-        CrashLog::append(
-            "Win32 ImGui platform backend migrating: old=%p new=%p\r\n",
-            g_platformWindow, hwnd);
-        ImGui_ImplWin32_Shutdown();
-        g_platformReady.store(false, std::memory_order_release);
-        g_platformWindow = nullptr;
-    }
-
-    if (!ImGui_ImplWin32_Init(hwnd))
-        return false;
-
-    g_platformWindow = hwnd;
-    g_platformReady.store(true, std::memory_order_release);
-
-    wchar_t title[256]{};
-    GetWindowTextW(hwnd, title, 256);
-    RECT client{};
-    GetClientRect(hwnd, &client);
-    CrashLog::append(
-        "Win32 ImGui platform backend initialized: hwnd=%p client=%ldx%ld title=%ls\r\n",
-        hwnd,
-        client.right - client.left,
-        client.bottom - client.top,
-        title);
-    return true;
-}
-
-bool isMouseCaptureMessage(UINT msg) {
-    switch (msg) {
-    case WM_LBUTTONDOWN:
-    case WM_LBUTTONUP:
-    case WM_LBUTTONDBLCLK:
-    case WM_RBUTTONDOWN:
-    case WM_RBUTTONUP:
-    case WM_RBUTTONDBLCLK:
-    case WM_MBUTTONDOWN:
-    case WM_MBUTTONUP:
-    case WM_MBUTTONDBLCLK:
-    case WM_XBUTTONDOWN:
-    case WM_XBUTTONUP:
-    case WM_XBUTTONDBLCLK:
-    case WM_MOUSEWHEEL:
-    case WM_MOUSEHWHEEL:
-        return true;
-    default:
-        return false;
+    if (action.action >= 1 && action.action <= 3) {
+        const unsigned bit = 1u << static_cast<unsigned>(action.action - 1);
+        if (action.data > 0)
+            buttons |= bit;
+        else
+            buttons &= ~bit;
+    } else if (action.action == 4 && action.data != 0) {
+        wheel += action.data > 0 ? 1 : -1;
     }
 }
 
-bool isKeyboardCaptureMessage(UINT msg) {
-    switch (msg) {
-    case WM_KEYDOWN:
-    case WM_KEYUP:
-    case WM_SYSKEYDOWN:
-    case WM_SYSKEYUP:
-    case WM_CHAR:
-    case WM_SYSCHAR:
-    case WM_UNICHAR:
-    case WM_IME_CHAR:
-        return true;
-    default:
-        return false;
-    }
-}
+void __fastcall mouseRefreshDetour(void* self) {
+    ActiveMouseCall active;
 
-LRESULT __fastcall windowProcDetour(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    ActiveWindowCall active;
+    if (g_originalMouseRefresh)
+        g_originalMouseRefresh(self);
 
-    if (g_running.load(std::memory_order_acquire) && ImGui::GetCurrentContext()) {
-        if (!g_platformReady.load(std::memory_order_acquire))
-            (void)initializePlatform(hwnd);
-
-        if (g_platformReady.load(std::memory_order_acquire) && hwnd == g_platformWindow) {
-            ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
-
-            if (g_showWindow.load(std::memory_order_relaxed)) {
-                const ImGuiIO& io = ImGui::GetIO();
-
-                // Feed move/focus messages to both systems. Suppress clicks/wheel
-                // only while ImGui owns them so dragging does not click Minecraft.
-                if (io.WantCaptureMouse && isMouseCaptureMessage(msg))
-                    return 0;
-                if (io.WantCaptureKeyboard && isKeyboardCaptureMessage(msg))
-                    return 0;
-            }
-        }
-    }
-
-    return g_originalWindowProc
-        ? g_originalWindowProc(hwnd, msg, wParam, lParam)
-        : DefWindowProcW(hwnd, msg, wParam, lParam);
-}
-
-void updateFallbackInput(ImGuiIO& io, HWND hwnd) {
-    if (!hwnd)
+    if (!g_running.load(std::memory_order_acquire))
         return;
 
-    POINT point{};
-    if (GetCursorPos(&point) && ScreenToClient(hwnd, &point))
-        io.AddMousePosEvent(static_cast<float>(point.x), static_cast<float>(point.y));
+    MouseDevice* mouse = MouseDevice::get();
+    if (!mouse)
+        return;
 
-    io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
-    io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
-    io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+    g_mouse.x.store(static_cast<int>(mouse->x), std::memory_order_relaxed);
+    g_mouse.y.store(static_cast<int>(mouse->y), std::memory_order_relaxed);
+
+    unsigned buttons = g_mouse.buttons.load(std::memory_order_relaxed);
+    int wheel = 0;
+
+    for (const MouseAction& action : mouse->inputs)
+        updateNativeMouseFromAction(action, buttons, wheel);
+
+    g_mouse.buttons.store(buttons, std::memory_order_release);
+    if (wheel != 0)
+        g_mouse.wheel.fetch_add(wheel, std::memory_order_acq_rel);
+    g_mouse.seen.store(true, std::memory_order_release);
+
+    // If ImGui owns the pointer, prevent native clicks/wheel from activating
+    // Minecraft controls beneath the ImGui window. Motion is left intact so
+    // Bedrock's pointer state continues to update normally.
+    if (g_showWindow.load(std::memory_order_relaxed) &&
+        g_guiOwnsMouse.load(std::memory_order_acquire)) {
+        auto it = mouse->inputs.begin();
+        while (it != mouse->inputs.end()) {
+            if (it->action >= 1 && it->action <= 4)
+                it = mouse->inputs.erase(it);
+            else
+                ++it;
+        }
+    }
+}
+
+void feedNativeMouse(ImGuiIO& io, MinecraftUIRenderContext* ctx) {
+    static unsigned previousButtons = 0;
+
+    if (g_mouse.seen.load(std::memory_order_acquire)) {
+        const float x = static_cast<float>(g_mouse.x.load(std::memory_order_relaxed));
+        const float y = static_cast<float>(g_mouse.y.load(std::memory_order_relaxed));
+        io.AddMousePosEvent(x, y);
+
+        const unsigned buttons = g_mouse.buttons.load(std::memory_order_acquire);
+        for (int index = 0; index < 3; ++index) {
+            const unsigned bit = 1u << static_cast<unsigned>(index);
+            const bool now = (buttons & bit) != 0;
+            const bool before = (previousButtons & bit) != 0;
+            if (now != before)
+                io.AddMouseButtonEvent(index, now);
+        }
+        previousButtons = buttons;
+
+        const int wheel = g_mouse.wheel.exchange(0, std::memory_order_acq_rel);
+        if (wheel != 0)
+            io.AddMouseWheelEvent(0.0f, static_cast<float>(wheel));
+        return;
+    }
+
+    // Fallback to Minecraft's own GuiData cursor position if the native mouse
+    // refresh has not fired yet. This is still game memory, not desktop input.
+    if (ctx && ctx->clientInstance) {
+        if (auto* gui = ctx->clientInstance->getGuiData()) {
+            const Vec2 mouse = gui->getMousePos();
+            io.AddMousePosEvent(mouse.x, mouse.y);
+        }
+    }
 }
 
 void prepareImGuiFrame(ScreenView* view, MinecraftUIRenderContext* ctx) {
     ImGuiIO& io = ImGui::GetIO();
-
-    if (g_platformReady.load(std::memory_order_acquire)) {
-        ImGui_ImplWin32_NewFrame();
-        io.DisplayFramebufferScale = ImVec2(1.f, 1.f);
-        return;
-    }
-
-    HWND hwnd = g_platformWindow ? g_platformWindow : findMinecraftWindow();
-    if (hwnd && initializePlatform(hwnd)) {
-        ImGui_ImplWin32_NewFrame();
-        io.DisplayFramebufferScale = ImVec2(1.f, 1.f);
-        return;
-    }
 
     Vec2 display = view ? view->screenScale : Vec2{};
     if (ctx && ctx->clientInstance) {
@@ -288,7 +200,7 @@ void prepareImGuiFrame(ScreenView* view, MinecraftUIRenderContext* ctx) {
         view && view->deltaTime > 0.f ? view->deltaTime : (1.f / 60.f),
         1.f / 1000.f, 0.1f);
 
-    updateFallbackInput(io, hwnd);
+    feedNativeMouse(io, ctx);
 }
 
 void drawTestWindow() {
@@ -296,22 +208,26 @@ void drawTestWindow() {
     ImGui::SetNextWindowSize(ImVec2(430.f, 235.f), ImGuiCond_Once);
 
     if (ImGui::Begin("MCBE Tessellator ImGui Backend")) {
+        const ImGuiIO& io = ImGui::GetIO();
+
         ImGui::TextUnformatted("Standalone renderer test");
         ImGui::Separator();
         ImGui::TextUnformatted("ImGui draw lists -> Minecraft Tessellator -> mce::Mesh");
-        ImGui::Text("Frame rate: %.1f", ImGui::GetIO().Framerate);
-        const ImGuiIO& io = ImGui::GetIO();
+        ImGui::Text("Frame rate: %.1f", io.Framerate);
         ImGui::Text("Mouse: %.0f, %.0f", io.MousePos.x, io.MousePos.y);
         ImGui::Text("LMB: %s   CaptureMouse: %s",
             io.MouseDown[0] ? "DOWN" : "up",
             io.WantCaptureMouse ? "yes" : "no");
         ImGui::Spacing();
-        ImGui::TextUnformatted("Drag this title bar to verify input.");
-        ImGui::TextUnformatted("INSERT: show/hide this window");
-        ImGui::TextUnformatted("END: safely uninject");
+        ImGui::TextUnformatted("Input source: Minecraft MouseDevice");
+        ImGui::TextUnformatted("Drag/resize this window to verify native input.");
+        ImGui::TextUnformatted("INSERT: show/hide   END: uninject");
         ImGui::Spacing();
-        const float pulse = 0.5f + 0.5f * static_cast<float>(std::sin(ImGui::GetTime() * 2.0));
-        ImGui::ProgressBar(pulse, ImVec2(-1.f, 0.f), "Tessellator render path active");
+
+        const float pulse =
+            0.5f + 0.5f * static_cast<float>(std::sin(ImGui::GetTime() * 2.0));
+        ImGui::ProgressBar(
+            pulse, ImVec2(-1.f, 0.f), "Tessellator render path active");
     }
     ImGui::End();
 }
@@ -323,29 +239,26 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     CrashLog::setStage("renderDetour: enter");
 
     if (!g_running.load(std::memory_order_acquire) || !view || !ctx) {
-        if (g_original)
-            g_original(view, ctx);
+        if (g_originalRender)
+            g_originalRender(view, ctx);
         return;
     }
 
     const bool owner = g_renderOwner.shouldRender(view);
     const bool visible = g_showWindow.load(std::memory_order_relaxed);
 
-    // Resource creation needs the live pre-vanilla UI context, but only do it
-    // on the single owner pass.
     if (owner && visible && !g_renderer.initialized()) {
         CrashLog::checkpoint("renderDetour: initialize backend");
         (void)g_renderer.initialize(ctx);
     }
 
-    // Let this Bedrock layer finish first. The learned owner is normally the
-    // final layer in the visual cycle, so our Tessellator mesh lands on top and
-    // is not immediately overdrawn by later native UI passes.
-    if (g_original)
-        g_original(view, ctx);
+    if (g_originalRender)
+        g_originalRender(view, ctx);
 
-    if (!owner || !visible || !g_renderer.initialized())
+    if (!owner || !visible || !g_renderer.initialized()) {
+        g_guiOwnsMouse.store(false, std::memory_order_release);
         return;
+    }
 
     CrashLog::setStage("renderDetour: prepare ImGui frame");
     prepareImGuiFrame(view, ctx);
@@ -354,32 +267,36 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     drawTestWindow();
     ImGui::Render();
 
+    // Publish capture state to the native mouse thread without touching ImGui
+    // from that thread.
+    g_guiOwnsMouse.store(
+        ImGui::GetIO().WantCaptureMouse,
+        std::memory_order_release);
+
     CrashLog::setStage("renderDetour: Tessellator submit");
     g_renderer.render(ImGui::GetDrawData(), ctx);
     CrashLog::setStage("renderDetour: complete");
 }
 
-void openConsole() {
-    if (!AllocConsole()) return;
-    FILE* stream = nullptr;
-    freopen_s(&stream, "CONOUT$", "w", stdout);
-    freopen_s(&stream, "CONOUT$", "w", stderr);
-    SetConsoleTitleW(L"MCBE ImGui Tessellator Backend");
-}
-
 DWORD WINAPI startup(void* module) {
     g_module = static_cast<HMODULE>(module);
     CrashLog::install(g_module);
-    openConsole();
-    std::puts("[MCBE-ImGui-Tess] loading standalone backend...");
-    std::wprintf(L"[MCBE-ImGui-Tess] diagnostics: %ls\n", CrashLog::directory());
 
-    CrashLog::append("RenderContext: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::renderContext()));
-    CrashLog::append("WindowProcCallback: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::windowProcCallback()));
-    CrashLog::append("Mesh::_renderMesh: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::meshRender()));
-    CrashLog::append("RenderMaterialGroup::common: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::materialCommon()));
-    CrashLog::append("TextureGroup::uploadTexture: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::textureUpload()));
-    CrashLog::append("cg::ImageResource::vtable: 0x%llX\r\n", static_cast<unsigned long long>(mcbe::signatures::imageResourceVtable()));
+    CrashLog::append("MCBE ImGui Tessellator standalone backend started.\r\n");
+    CrashLog::append("RenderContext: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::renderContext()));
+    CrashLog::append("MouseRefresh: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::mouseRefresh()));
+    CrashLog::append("MouseDevice: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::mouseDevice()));
+    CrashLog::append("Mesh::_renderMesh: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::meshRender()));
+    CrashLog::append("RenderMaterialGroup::common: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::materialCommon()));
+    CrashLog::append("TextureGroup::uploadTexture: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::textureUpload()));
+    CrashLog::append("cg::ImageResource::vtable: 0x%llX\r\n",
+        static_cast<unsigned long long>(mcbe::signatures::imageResourceVtable()));
 
     CrashLog::setStage("startup: IMGUI_CHECKVERSION");
     IMGUI_CHECKVERSION();
@@ -389,86 +306,77 @@ DWORD WINAPI startup(void* module) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-
-    // Do not initialize ImGui's Win32 backend here. AllocConsole() creates
-    // another HWND in this process, and startup-time window discovery can bind
-    // ImGui to that console. The Minecraft MainWindow hook below supplies the
-    // authoritative game HWND on its first message.
-    g_platformWindow = nullptr;
-    g_platformReady.store(false, std::memory_order_release);
 
     if (!mcbe::signatures::requiredReady()) {
-        std::puts("[MCBE-ImGui-Tess] ERROR: one or more 26.52 renderer signatures were not found.");
-        std::puts("[MCBE-ImGui-Tess] Press END to unload.");
+        CrashLog::append("ERROR: one or more required 26.52 renderer signatures are missing.\r\n");
     } else if (MH_Initialize() != MH_OK) {
-        std::puts("[MCBE-ImGui-Tess] ERROR: MinHook initialization failed.");
+        CrashLog::append("ERROR: MinHook initialization failed.\r\n");
     } else {
-        auto* renderTarget = reinterpret_cast<void*>(mcbe::signatures::renderContext());
-        auto* windowTarget = reinterpret_cast<void*>(mcbe::signatures::windowProcCallback());
+        auto* renderTarget =
+            reinterpret_cast<void*>(mcbe::signatures::renderContext());
+        auto* mouseTarget =
+            reinterpret_cast<void*>(mcbe::signatures::mouseRefresh());
 
-        std::printf("[MCBE-ImGui-Tess] RenderContext target: %p\n", renderTarget);
-        std::printf("[MCBE-ImGui-Tess] WindowProc target: %p\n", windowTarget);
-
-        bool renderHookOk =
+        const bool renderHookOk =
+            renderTarget &&
             MH_CreateHook(
                 renderTarget,
                 reinterpret_cast<LPVOID>(&renderDetour),
-                reinterpret_cast<LPVOID*>(&g_original)) == MH_OK &&
+                reinterpret_cast<LPVOID*>(&g_originalRender)) == MH_OK &&
             MH_EnableHook(renderTarget) == MH_OK;
 
-        bool windowHookOk = false;
-        if (windowTarget) {
-            windowHookOk =
+        bool mouseHookOk = false;
+        if (mouseTarget && mcbe::signatures::mouseDevice()) {
+            mouseHookOk =
                 MH_CreateHook(
-                    windowTarget,
-                    reinterpret_cast<LPVOID>(&windowProcDetour),
-                    reinterpret_cast<LPVOID*>(&g_originalWindowProc)) == MH_OK &&
-                MH_EnableHook(windowTarget) == MH_OK;
+                    mouseTarget,
+                    reinterpret_cast<LPVOID>(&mouseRefreshDetour),
+                    reinterpret_cast<LPVOID*>(&g_originalMouseRefresh)) == MH_OK &&
+                MH_EnableHook(mouseTarget) == MH_OK;
         }
-        g_windowHookReady.store(windowHookOk, std::memory_order_release);
 
-        if (!renderHookOk) {
-            std::puts("[MCBE-ImGui-Tess] ERROR: RenderContext hook failed.");
-        } else {
-            std::puts("[MCBE-ImGui-Tess] Tessellator renderer hooked.");
-            std::puts(windowHookOk
-                ? "[MCBE-ImGui-Tess] Win32 input hooked through Minecraft MainWindow."
-                : "[MCBE-ImGui-Tess] WARNING: window callback hook missing; using polling fallback.");
-            std::puts("[MCBE-ImGui-Tess] INSERT toggles it, END uninjects.");
-        }
+        CrashLog::append(
+            "Hooks: render=%s nativeMouse=%s\r\n",
+            renderHookOk ? "OK" : "FAILED",
+            mouseHookOk ? "OK" : "FAILED");
     }
 
     bool lastInsert = false;
     while ((GetAsyncKeyState(VK_END) & 1) == 0) {
         const bool insert = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-        if (insert && !lastInsert)
-            g_showWindow.store(!g_showWindow.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        if (insert && !lastInsert) {
+            const bool next =
+                !g_showWindow.load(std::memory_order_relaxed);
+            g_showWindow.store(next, std::memory_order_relaxed);
+            if (!next)
+                g_guiOwnsMouse.store(false, std::memory_order_release);
+        }
         lastInsert = insert;
         Sleep(10);
     }
 
     g_running.store(false, std::memory_order_release);
+    g_guiOwnsMouse.store(false, std::memory_order_release);
 
-    if (auto* renderTarget = reinterpret_cast<void*>(mcbe::signatures::renderContext()))
+    if (auto* renderTarget =
+            reinterpret_cast<void*>(mcbe::signatures::renderContext()))
         MH_DisableHook(renderTarget);
-    if (auto* windowTarget = reinterpret_cast<void*>(mcbe::signatures::windowProcCallback()))
-        MH_DisableHook(windowTarget);
+    if (auto* mouseTarget =
+            reinterpret_cast<void*>(mcbe::signatures::mouseRefresh()))
+        MH_DisableHook(mouseTarget);
 
     while (g_activeRenderCalls.load(std::memory_order_acquire) != 0 ||
-           g_activeWindowCalls.load(std::memory_order_acquire) != 0)
+           g_activeMouseCalls.load(std::memory_order_acquire) != 0)
         Sleep(1);
 
-    if (auto* renderTarget = reinterpret_cast<void*>(mcbe::signatures::renderContext()))
+    if (auto* renderTarget =
+            reinterpret_cast<void*>(mcbe::signatures::renderContext()))
         MH_RemoveHook(renderTarget);
-    if (auto* windowTarget = reinterpret_cast<void*>(mcbe::signatures::windowProcCallback()))
-        MH_RemoveHook(windowTarget);
+    if (auto* mouseTarget =
+            reinterpret_cast<void*>(mcbe::signatures::mouseRefresh()))
+        MH_RemoveHook(mouseTarget);
 
     g_renderer.shutdown();
-
-    if (g_platformReady.exchange(false, std::memory_order_acq_rel))
-        ImGui_ImplWin32_Shutdown();
-    g_platformWindow = nullptr;
 
     if (ImGui::GetCurrentContext())
         ImGui::DestroyContext();
@@ -478,9 +386,7 @@ DWORD WINAPI startup(void* module) {
     CrashLog::append("Clean unload completed.\r\n");
     CrashLog::uninstall();
 
-    std::puts("[MCBE-ImGui-Tess] unloaded.");
-    Sleep(100);
-    FreeConsole();
+    Sleep(50);
     FreeLibraryAndExitThread(g_module, 0);
     return 0;
 }
