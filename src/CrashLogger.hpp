@@ -7,6 +7,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 
 #pragma comment(lib, "Dbghelp.lib")
@@ -20,7 +21,7 @@ inline wchar_t g_sessionPath[MAX_PATH]{};
 inline wchar_t g_crashPath[MAX_PATH]{};
 inline wchar_t g_dumpPath[MAX_PATH]{};
 inline wchar_t g_lastStagePath[MAX_PATH]{};
-inline std::atomic_uint g_checkpointBudget{256};
+inline std::atomic_uint64_t g_lastCheckpointTick{0};
 inline std::uintptr_t g_moduleBegin{};
 inline std::uintptr_t g_moduleEnd{};
 
@@ -35,13 +36,24 @@ inline void setStage(const char* stage) noexcept {
 
 inline void checkpoint(const char* stage) noexcept {
     setStage(stage);
-    unsigned remaining = g_checkpointBudget.load(std::memory_order_relaxed);
-    while (remaining > 0 &&
-           !g_checkpointBudget.compare_exchange_weak(
-               remaining, remaining - 1,
-               std::memory_order_relaxed, std::memory_order_relaxed)) {}
-    if (remaining == 0)
-        return;
+
+    // The exception handler always records the exact in-memory stage. Persist
+    // initialization checkpoints immediately, but throttle steady-state render
+    // checkpoints so diagnostics never become a frame-time bottleneck.
+    const bool initialization =
+        stage && (std::strstr(stage, "initialize") || std::strstr(stage, "startup"));
+
+    const auto now = static_cast<std::uint64_t>(GetTickCount64());
+    if (!initialization) {
+        auto last = g_lastCheckpointTick.load(std::memory_order_relaxed);
+        if (now - last < 1000)
+            return;
+        if (!g_lastCheckpointTick.compare_exchange_strong(
+                last, now, std::memory_order_relaxed, std::memory_order_relaxed))
+            return;
+    } else {
+        g_lastCheckpointTick.store(now, std::memory_order_relaxed);
+    }
 
     char line[1024]{};
     const int count = snprintf(
@@ -53,16 +65,15 @@ inline void checkpoint(const char* stage) noexcept {
 
     HANDLE file = CreateFileW(
         g_lastStagePath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE)
         return;
+
     DWORD written = 0;
     if (count > 0)
         WriteFile(file, line, static_cast<DWORD>(count), &written, nullptr);
-    FlushFileBuffers(file);
     CloseHandle(file);
 }
-
 inline void setPointers(const void* context, const void* tessellator = nullptr) noexcept {
     tls_context = reinterpret_cast<std::uintptr_t>(context);
     tls_tessellator = reinterpret_cast<std::uintptr_t>(tessellator);
