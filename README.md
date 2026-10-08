@@ -12,7 +12,7 @@ After injection it hooks Bedrock's current `ScreenView` / `MinecraftUIRenderCont
 
 There is no DX11/DX12 ImGui renderer in this project.
 
-The renderer batches adjacent ImGui commands that share a texture and clipping rectangle, pre-reserves Tessellator vertex/color/UV storage, honors `VtxOffset`/`IdxOffset`, and prefers Minecraft's native `im_gui` material with `ui_textured` as a fallback.
+The renderer batches adjacent ImGui commands that share a texture and clipping rectangle, pre-reserves Tessellator vertex/color/UV storage, honors `VtxOffset`/`IdxOffset`, and uses Minecraft's known-good `ui_textured` material first, with `im_gui` only as a fallback.
 
 ## Controls
 
@@ -26,6 +26,8 @@ The renderer batches adjacent ImGui commands that share a texture and clipping r
 Do **not** build this engine-facing DLL with the VS 2026 STL. MCBE 26.52/Phase uses the VS 2022-compatible STL ABI, and engine-facing types such as `ResourceLocation` contain `std::string`. The project contains compile-time size checks for `std::string`, `ResourceLocation`, `ImageBuffer`, `TextureDescription`, and `TextureContainer` so an incompatible toolchain fails at build time instead of crashing during `TextureGroup::uploadTexture`.
 
 The CI intentionally matches Phase's current shipping build: **Visual Studio 17 2022 + ClangCL**.
+
+**Do not inject a Debug build.** MSVC Debug STL changes the binary layout of engine-facing types such as `std::string` and `std::vector`. The project now rejects `_DEBUG` / `_ITERATOR_DEBUG_LEVEL != 0` builds at compile time. Use **Release** for injection.
 
 
 Requirements:
