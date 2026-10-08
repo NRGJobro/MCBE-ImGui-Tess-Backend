@@ -84,6 +84,48 @@ public:
             fontTextureData_.get(),
             fontTexture_.resourcePointerBlock.get());
         io.Fonts->SetTexID(toTextureId(&fontTexture_));
+
+        // Upload a uniform white texture for the two solid widget types that
+        // still artifact when sampling ImGui's single atlas white texel.
+        // A uniform texture is immune to linear filtering/mipmap bleed.
+        {
+            constexpr std::uint32_t solidSize = 8;
+            constexpr std::size_t solidBytes =
+                static_cast<std::size_t>(solidSize) *
+                static_cast<std::size_t>(solidSize) * 4u;
+
+            mce::Image solidImage{};
+            solidImage.imageFormat = mce::ImageFormat::RGBA8Unorm;
+            solidImage.width = solidSize;
+            solidImage.height = solidSize;
+            solidImage.depth = 1;
+            solidImage.usage = mce::ImageUsage::sRGB;
+
+            auto* solidPixels = new std::uint8_t[solidBytes];
+            std::memset(solidPixels, 0xFF, solidBytes);
+            solidImage.imageData = mce::Blob(solidPixels, solidBytes);
+
+            cg::ImageBuffer solidBuffer(solidImage);
+            if (solidBuffer.isValid()) {
+                ResourceLocation solidLocation(
+                    "imgui_tess/solid_white_" +
+                    std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+
+                auto& solidUploaded =
+                    ctx->textureGroup->uploadTexture(solidLocation, solidBuffer);
+
+                if (solidUploaded.texture &&
+                    solidUploaded.texture->clientTexture.resourcePointerBlock) {
+                    solidTextureData_ = solidUploaded.texture;
+                    solidTexture_ = solidTextureData_->clientTexture;
+                    CrashLog::append(
+                        "Backend init: solid white texture OK data=%p resource=%p\r\n",
+                        solidTextureData_.get(),
+                        solidTexture_.resourcePointerBlock.get());
+                }
+            }
+        }
+
         io.BackendRendererName = "mcbe_tessellator_26_52";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
@@ -151,6 +193,8 @@ public:
         material_ = nullptr;
         worldFillMaterial_ = nullptr;
         worldTextMaterial_ = nullptr;
+        solidTextureData_.reset();
+        solidTexture_ = {};
         worldFillMaterialName_ = "none";
         worldTextMaterialName_ = "none";
         initialized_ = false;
@@ -347,16 +391,54 @@ public:
             const ImDrawIdx* indices = list->IdxBuffer.Data + cmd.IdxOffset;
             const unsigned usable = cmd.ElemCount - (cmd.ElemCount % 3u);
 
-            const auto submitPass = [&](bool solidPass, mce::MaterialPtr* material) {
+            const auto submitPass = [&](int passKind, mce::MaterialPtr* material) {
                 if (!material)
                     return;
+
+                const bool solidPass = passKind != 2;
+                const bool specialSolidPass = passKind == 1;
+
+                const ImGuiStyle& passStyle = ImGui::GetStyle();
+                const ImU32 passFrameBg =
+                    ImGui::ColorConvertFloat4ToU32(
+                        passStyle.Colors[ImGuiCol_FrameBg]);
+                const ImU32 passSeparator =
+                    ImGui::ColorConvertFloat4ToU32(
+                        passStyle.Colors[ImGuiCol_Separator]);
+                const ImU32 passSeparatorHovered =
+                    ImGui::ColorConvertFloat4ToU32(
+                        passStyle.Colors[ImGuiCol_SeparatorHovered]);
+                const ImU32 passSeparatorActive =
+                    ImGui::ColorConvertFloat4ToU32(
+                        passStyle.Colors[ImGuiCol_SeparatorActive]);
+
+                const auto isSpecialSolid = [&](const ImDrawVert& a,
+                                                const ImDrawVert& b,
+                                                const ImDrawVert& d) {
+                    if (a.col != b.col || a.col != d.col)
+                        return false;
+                    return a.col == passFrameBg ||
+                           a.col == passSeparator ||
+                           a.col == passSeparatorHovered ||
+                           a.col == passSeparatorActive;
+                };
 
                 unsigned matchedElements = 0;
                 for (unsigned i = 0; i < usable; i += 3) {
                     const ImDrawVert& a = vertices[indices[i + 0]];
                     const ImDrawVert& b = vertices[indices[i + 1]];
                     const ImDrawVert& d = vertices[indices[i + 2]];
-                    if (isSolidTriangle(a, b, d) == solidPass)
+
+                    const bool solid = isSolidTriangle(a, b, d);
+                    bool matches = false;
+                    if (passKind == 2)
+                        matches = !solid;
+                    else if (passKind == 1)
+                        matches = solid && isSpecialSolid(a, b, d);
+                    else
+                        matches = solid && !isSpecialSolid(a, b, d);
+
+                    if (matches)
                         matchedElements += 3;
                 }
 
@@ -468,7 +550,10 @@ public:
                 const auto emitVertex = [&](const ImDrawVert& vertex, float frontBias) {
                     positions.push_back(toWorldLocal(vertex, frontBias));
                     colors.push_back(vertex.col);
-                    uvs.push_back({vertex.uv.x, vertex.uv.y});
+                    if (specialSolidPass)
+                        uvs.push_back({0.5f, 0.5f});
+                    else
+                        uvs.push_back({vertex.uv.x, vertex.uv.y});
                 };
 
                 const auto sameVertexIndex = [](ImDrawIdx lhs, ImDrawIdx rhs) {
@@ -506,7 +591,17 @@ public:
                     const ImDrawVert& d = vertices[indices[i + 2]];
 
                     const bool isSolid = isSolidTriangle(a, b, d);
-                    if (isSolid != solidPass) {
+                    const bool specialSolid = isSolid && isSpecialSolid(a, b, d);
+
+                    bool matches = false;
+                    if (passKind == 2)
+                        matches = !isSolid;
+                    else if (passKind == 1)
+                        matches = specialSolid;
+                    else
+                        matches = isSolid && !specialSolid;
+
+                    if (!matches) {
                         i += 3;
                         continue;
                     }
@@ -570,18 +665,25 @@ public:
                         solidPass
                             ? "backend.world: submit fill"
                             : "backend.world: submit text");
+                    const mce::ClientTexture* passTexture = clientTexture;
+                    if (specialSolidPass &&
+                        solidTexture_.resourcePointerBlock) {
+                        passTexture = &solidTexture_;
+                    }
+
                     mesh.renderMesh(
                         screen->toMeshContext(),
                         material,
-                        *clientTexture);
+                        *passTexture);
                     tess->reclaimTransient(mesh);
                 }
             };
 
             // Submit fills first, then text on top. Both materials are world-space
             // depth-tested; only their sampling/blending behavior differs.
-            submitPass(true, worldFillMaterial_);
-            submitPass(false, worldTextMaterial_);
+            submitPass(0, worldFillMaterial_);
+            submitPass(1, worldFillMaterial_);
+            submitPass(2, worldTextMaterial_);
         }
     }
 
@@ -677,6 +779,8 @@ private:
     ImVec2 fontWhiteUv_{};
     std::shared_ptr<mce::BedrockTextureData> fontTextureData_{};
     mce::ClientTexture fontTexture_{};
+    std::shared_ptr<mce::BedrockTextureData> solidTextureData_{};
+    mce::ClientTexture solidTexture_{};
 };
 
 } // namespace mcbe
