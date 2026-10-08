@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MCBE.hpp"
+#include "CrashLogger.hpp"
 #include <imgui.h>
 
 #include <algorithm>
@@ -12,10 +13,13 @@ namespace mcbe {
 class ImGuiTessBackend {
 public:
     bool initialize(MinecraftUIRenderContext* ctx) {
+        CrashLog::setStage("backend.initialize: validate context");
+        CrashLog::setPointers(ctx);
         if (initialized_) return true;
         if (!ctx || !ctx->textureGroup || !ctx->screenContext) return false;
         if (!signatures::requiredReady()) return false;
 
+        CrashLog::setStage("backend.initialize: build font atlas");
         ImGuiIO& io = ImGui::GetIO();
         unsigned char* pixels = nullptr;
         int width = 0, height = 0, bytesPerPixel = 0;
@@ -34,11 +38,13 @@ public:
         std::memcpy(copy, pixels, byteCount);
         image.imageData = mce::Blob(copy, byteCount);
 
+        CrashLog::setStage("backend.initialize: build ImageBuffer");
         cg::ImageBuffer buffer(image);
         if (!buffer.isValid()) return false;
         mce::TextureContainer container(buffer);
 
         ResourceLocation location("imgui_tess/font_atlas_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+        CrashLog::setStage("backend.initialize: TextureGroup::uploadTexture");
         auto& uploaded = ctx->textureGroup->uploadTexture(
             location, container, std::optional<std::string_view>{"MCBE ImGui Tess font"});
         if (!uploaded.texture || !uploaded.texture->clientTexture.resourcePointerBlock) return false;
@@ -48,10 +54,12 @@ public:
         io.BackendRendererName = "mcbe_tessellator_26_52";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
+        CrashLog::setStage("backend.initialize: create im_gui material");
         material_ = mce::MaterialPtr::createMaterial(HashedString("im_gui"));
         if (!material_) material_ = mce::MaterialPtr::createMaterial(HashedString("ui_textured"));
 
         initialized_ = material_ != nullptr;
+        CrashLog::setStage(initialized_ ? "backend.initialize: complete" : "backend.initialize: material failed");
         return initialized_;
     }
 
@@ -68,8 +76,12 @@ public:
     bool initialized() const { return initialized_; }
 
     void render(ImDrawData* drawData, MinecraftUIRenderContext* ctx) {
+        CrashLog::setStage("backend.render: validate draw data");
+        CrashLog::setPointers(ctx);
         if (!initialized_ || !drawData || !ctx || !ctx->screenContext || drawData->CmdListsCount <= 0) return;
+        CrashLog::setStage("backend.render: get Tessellator");
         auto* tess = ctx->screenContext->getTessellator();
+        CrashLog::setPointers(ctx, tess);
         if (!tess || !material_) return;
 
         for (int listIndex = 0; listIndex < drawData->CmdListsCount; ++listIndex) {
@@ -106,13 +118,16 @@ public:
                 }
 
                 const int reserve = static_cast<int>(std::min<std::uint64_t>(totalElements, INT_MAX));
+                CrashLog::setStage("backend.render: Tessellator::begin");
                 tess->begin(mce::PrimitiveMode::TriangleList, reserve);
                 tess->meshData.colors.reserve(tess->meshData.colors.size() + static_cast<std::size_t>(reserve));
                 tess->meshData.textureUVs[0].reserve(tess->meshData.textureUVs[0].size() + static_cast<std::size_t>(reserve));
 
+                CrashLog::setStage("backend.render: set clipping rectangle");
                 ctx->saveCurrentClippingRectangle();
                 ctx->setClippingRectangle(Rect{clip.left, clip.right, clip.top, clip.bottom});
 
+                CrashLog::setStage("backend.render: emit ImGui vertices");
                 for (int emit = commandIndex; emit < runEnd; ++emit)
                     emitCommand(*tess, *list, list->CmdBuffer[emit], drawData->DisplayPos);
 
@@ -121,13 +136,16 @@ public:
                     clientTexture = &fontTexture_;
 
                 if (clientTexture && clientTexture->resourcePointerBlock) {
+                    CrashLog::setStage("backend.render: Tessellator::end");
                     mce::Mesh mesh{};
                     tess->end(mesh);
+                    CrashLog::setStage("backend.render: mce::Mesh::_renderMesh");
                     mesh.renderMesh(ctx->screenContext->toMeshContext(), material_, *clientTexture);
                 } else {
                     tess->clear();
                 }
 
+                CrashLog::setStage("backend.render: restore clipping rectangle");
                 ctx->restoreSavedClippingRectangle();
                 commandIndex = runEnd;
             }
