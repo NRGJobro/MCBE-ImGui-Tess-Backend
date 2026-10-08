@@ -19,19 +19,51 @@ public:
     std::vector<std::uint8_t> rawData;
 
     void renderMesh(MeshContext* context, MaterialPtr* material, const ClientTexture& texture) const {
-        const auto address = mcbe::signatures::meshRender();
-        if (!address || !context || !material) return;
+        if (!context || !material)
+            return;
 
         StaticVector<TextureBinding, 8> textures;
         textures.push_back(texture);
-        OffscreenVariant offscreen = UIMeshOffscreenCaptureDescription{};
-        std::optional<dragon_stub::RenderMetadata> metadata{};
+        renderMeshFull(
+            context,
+            material,
+            textures,
+            0,
+            0,
+            UIMeshOffscreenCaptureDescription{},
+            nullptr,
+            {});
+    }
 
-        using Fn = void(__fastcall*)(
-            const Mesh*, MeshContext*, MaterialPtr*, const StaticVector<TextureBinding, 8>&,
-            std::uint32_t, std::uint32_t, const OffscreenVariant&, void*,
-            const std::optional<dragon_stub::RenderMetadata>&);
-        reinterpret_cast<Fn>(address)(this, context, material, textures, 0, 0, offscreen, nullptr, metadata);
+private:
+    void renderMeshFull(
+        MeshContext* context,
+        MaterialPtr* material,
+        StaticVector<TextureBinding, 8> textures,
+        std::uint32_t startOffset,
+        std::uint32_t count,
+        const OffscreenVariant& offscreen,
+        void* overrideIndexBuffer,
+        const std::optional<dragon_stub::RenderMetadata>& metadata) const {
+
+        const auto address = mcbe::signatures::meshRender();
+        if (!address || !context || !material)
+            return;
+
+        using Method = decltype(&Mesh::renderMeshFull);
+        static_assert(sizeof(Method) == sizeof(std::uintptr_t),
+            "Unexpected member-function-pointer ABI for mce::Mesh.");
+
+        const auto method = std::bit_cast<Method>(address);
+        (this->*method)(
+            context,
+            material,
+            textures,
+            startOffset,
+            count,
+            offscreen,
+            overrideIndexBuffer,
+            metadata);
     }
 };
 
