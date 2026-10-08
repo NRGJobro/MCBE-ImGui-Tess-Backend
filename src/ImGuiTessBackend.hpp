@@ -268,14 +268,33 @@ public:
 
         const float panelHeight = panelWidth * (sourceSize.y / sourceSize.x);
 
-        const auto toWorldLocal = [&](const ImDrawVert& vertex) -> Vec3 {
+        Vec3 panelNormal{
+            panelRight.y * panelUp.z - panelRight.z * panelUp.y,
+            panelRight.z * panelUp.x - panelRight.x * panelUp.z,
+            panelRight.x * panelUp.y - panelRight.y * panelUp.x};
+
+        const float normalLengthSq =
+            panelNormal.x * panelNormal.x +
+            panelNormal.y * panelNormal.y +
+            panelNormal.z * panelNormal.z;
+
+        if (normalLengthSq > 0.000001f) {
+            const float invLength = 1.0f / std::sqrt(normalLengthSq);
+            panelNormal.x *= invLength;
+            panelNormal.y *= invLength;
+            panelNormal.z *= invLength;
+        } else {
+            panelNormal = {0.f, 0.f, 0.f};
+        }
+
+        const auto toWorldLocal = [&](const ImDrawVert& vertex, float frontBias) -> Vec3 {
             const float nx = ((vertex.pos.x - sourcePos.x) / sourceSize.x) - 0.5f;
             const float ny = 0.5f - ((vertex.pos.y - sourcePos.y) / sourceSize.y);
 
             const Vec3 world{
-                panelCenter.x + panelRight.x * (nx * panelWidth) + panelUp.x * (ny * panelHeight),
-                panelCenter.y + panelRight.y * (nx * panelWidth) + panelUp.y * (ny * panelHeight),
-                panelCenter.z + panelRight.z * (nx * panelWidth) + panelUp.z * (ny * panelHeight)};
+                panelCenter.x + panelRight.x * (nx * panelWidth) + panelUp.x * (ny * panelHeight) + panelNormal.x * frontBias,
+                panelCenter.y + panelRight.y * (nx * panelWidth) + panelUp.y * (ny * panelHeight) + panelNormal.y * frontBias,
+                panelCenter.z + panelRight.z * (nx * panelWidth) + panelUp.z * (ny * panelHeight) + panelNormal.z * frontBias};
 
             return {
                 world.x - renderOrigin.x,
@@ -353,8 +372,14 @@ public:
                 colors.reserve(colors.size() + matchedElements);
                 uvs.reserve(uvs.size() + matchedElements);
 
+                // Both passes are depth-tested. Put glyphs just in front of the
+                // panel surface so they don't z-fight the coplanar fill quads.
+                // 0.004 blocks is visually negligible but comfortably above the
+                // depth precision noise that was making glyph fragments flicker.
+                const float frontBias = solidPass ? 0.0f : 0.004f;
+
                 const auto emitVertex = [&](const ImDrawVert& vertex) {
-                    positions.push_back(toWorldLocal(vertex));
+                    positions.push_back(toWorldLocal(vertex, frontBias));
                     colors.push_back(vertex.col);
                     uvs.push_back({vertex.uv.x, vertex.uv.y});
                 };
