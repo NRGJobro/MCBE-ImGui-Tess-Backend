@@ -318,11 +318,11 @@ public:
                    nearUv(d.uv, fontWhiteUv_);
         };
 
-        // ImGui is a painter's-order renderer. A normal GPU UI pass doesn't need
-        // depth separation, but our world-space copy does. Track solid triangles
-        // across the entire draw list so later primitives sit microscopically
-        // closer to the camera than earlier ones.
-        std::uint32_t solidTriangleOrdinal = 0;
+        // ImGui is a painter's-order renderer. In world space we preserve that
+        // order by assigning one microscopic depth layer per *primitive*.
+        // A primitive may be a single triangle (collapse arrow) or two triangles
+        // sharing an edge (rect/line/progress bar quad).
+        std::uint32_t solidPrimitiveOrdinal = 0;
 
         for (int commandIndex = 0; commandIndex < list->CmdBuffer.Size; ++commandIndex) {
             const ImDrawCmd& cmd = list->CmdBuffer[commandIndex];
@@ -379,14 +379,13 @@ public:
                 uvs.reserve(uvs.size() + matchedElements);
 
                 // Both passes stay world-depth-tested. Text gets its own stable
-                // foreground layer. Solid UI geometry follows ImGui painter order:
-                // each normal two-triangle quad gets a microscopic extra offset,
-                // so title bars, separators, arrows, borders, etc. cannot z-fight
-                // the window/background triangles underneath them.
+                // foreground layer. Solid UI geometry follows ImGui painter order,
+                // but we group connected triangle pairs so both halves of a quad
+                // always remain perfectly coplanar.
                 constexpr float kSolidBaseBias = 0.0005f;
-                constexpr float kSolidLayerStep = 0.00002f;
+                constexpr float kSolidLayerStep = 0.000025f;
                 constexpr std::uint32_t kMaxSolidLayers = 384;
-                constexpr float kTextBias = 0.0100f;
+                constexpr float kTextBias = 0.0120f;
 
                 const auto emitVertex = [&](const ImDrawVert& vertex, float frontBias) {
                     positions.push_back(toWorldLocal(vertex, frontBias));
@@ -394,34 +393,89 @@ public:
                     uvs.push_back({vertex.uv.x, vertex.uv.y});
                 };
 
-                for (unsigned i = 0; i < usable; i += 3) {
+                const auto sameVertexIndex = [](ImDrawIdx lhs, ImDrawIdx rhs) {
+                    return lhs == rhs;
+                };
+
+                const auto trianglesShareEdge = [&](unsigned first, unsigned second) {
+                    if (first + 2 >= usable || second + 2 >= usable)
+                        return false;
+
+                    const ImDrawIdx a0 = indices[first + 0];
+                    const ImDrawIdx a1 = indices[first + 1];
+                    const ImDrawIdx a2 = indices[first + 2];
+                    const ImDrawIdx b0 = indices[second + 0];
+                    const ImDrawIdx b1 = indices[second + 1];
+                    const ImDrawIdx b2 = indices[second + 2];
+
+                    unsigned shared = 0;
+                    const ImDrawIdx av[3]{a0, a1, a2};
+                    const ImDrawIdx bv[3]{b0, b1, b2};
+                    for (ImDrawIdx va : av) {
+                        for (ImDrawIdx vb : bv) {
+                            if (sameVertexIndex(va, vb)) {
+                                ++shared;
+                                break;
+                            }
+                        }
+                    }
+                    return shared >= 2;
+                };
+
+                for (unsigned i = 0; i < usable;) {
                     const ImDrawVert& a = vertices[indices[i + 0]];
                     const ImDrawVert& b = vertices[indices[i + 1]];
                     const ImDrawVert& d = vertices[indices[i + 2]];
 
                     const bool isSolid = isSolidTriangle(a, b, d);
-                    if (isSolid != solidPass)
+                    if (isSolid != solidPass) {
+                        i += 3;
                         continue;
-
-                    float frontBias = kTextBias;
-                    if (solidPass) {
-                        // Most ImGui solid primitives are emitted as two triangles
-                        // per quad. Keep each pair coplanar, then advance the next
-                        // primitive slightly toward the viewer.
-                        const std::uint32_t layer =
-                            std::min<std::uint32_t>(
-                                solidTriangleOrdinal / 2u,
-                                kMaxSolidLayers);
-                        frontBias =
-                            kSolidBaseBias +
-                            static_cast<float>(layer) * kSolidLayerStep;
-                        ++solidTriangleOrdinal;
                     }
 
-                    // Y-down ImGui -> Y-up world basis flips winding once.
+                    if (!solidPass) {
+                        emitVertex(d, kTextBias);
+                        emitVertex(b, kTextBias);
+                        emitVertex(a, kTextBias);
+                        i += 3;
+                        continue;
+                    }
+
+                    const std::uint32_t layer =
+                        std::min<std::uint32_t>(
+                            solidPrimitiveOrdinal,
+                            kMaxSolidLayers);
+                    const float frontBias =
+                        kSolidBaseBias +
+                        static_cast<float>(layer) * kSolidLayerStep;
+
+                    // First triangle of this primitive.
                     emitVertex(d, frontBias);
                     emitVertex(b, frontBias);
                     emitVertex(a, frontBias);
+
+                    // If the immediately following solid triangle shares an edge,
+                    // it is the second half of the same ImGui quad. Keep it on the
+                    // exact same world-space depth.
+                    if (i + 5 < usable) {
+                        const ImDrawVert& na = vertices[indices[i + 3]];
+                        const ImDrawVert& nb = vertices[indices[i + 4]];
+                        const ImDrawVert& nd = vertices[indices[i + 5]];
+
+                        if (isSolidTriangle(na, nb, nd) &&
+                            trianglesShareEdge(i, i + 3)) {
+                            emitVertex(nd, frontBias);
+                            emitVertex(nb, frontBias);
+                            emitVertex(na, frontBias);
+                            i += 6;
+                            ++solidPrimitiveOrdinal;
+                            continue;
+                        }
+                    }
+
+                    // Genuine one-triangle primitive such as the collapse arrow.
+                    i += 3;
+                    ++solidPrimitiveOrdinal;
                 }
 
                 tess->count = static_cast<int>(positions.size());
