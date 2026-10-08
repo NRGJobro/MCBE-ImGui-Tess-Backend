@@ -110,21 +110,20 @@ public:
     std::shared_ptr<mce::TextureGroup> textureGroup; // 0x58
 
     void setClippingRectangle(const Rect& rect) {
-        using Fn = void(__fastcall*)(MinecraftUIRenderContext*, const Rect&);
-        reinterpret_cast<Fn>(vtable[22])(this, rect);
+        mcbe::abi::callVFunc<22, void>(this, static_cast<const Rect&>(rect));
     }
+
     void saveCurrentClippingRectangle() {
-        using Fn = void(__fastcall*)(MinecraftUIRenderContext*);
-        reinterpret_cast<Fn>(vtable[24])(this);
+        mcbe::abi::callVFunc<24, void>(this);
     }
+
     void restoreSavedClippingRectangle() {
-        using Fn = void(__fastcall*)(MinecraftUIRenderContext*);
-        reinterpret_cast<Fn>(vtable[25])(this);
+        mcbe::abi::callVFunc<25, void>(this);
     }
 
     mce::TexturePtr getTexture(const ResourceLocation& location, bool forceReload) {
-        using Fn = mce::TexturePtr(__fastcall*)(MinecraftUIRenderContext*, const ResourceLocation&, bool);
-        return reinterpret_cast<Fn>(vtable[31])(this, location, forceReload);
+        return mcbe::abi::callVFunc<31, mce::TexturePtr>(
+            this, static_cast<const ResourceLocation&>(location), forceReload);
     }
 };
 static_assert(offsetof(MinecraftUIRenderContext, textureGroup) == 0x58);
