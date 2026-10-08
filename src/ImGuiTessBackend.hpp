@@ -47,6 +47,20 @@ public:
         mce::TextureContainer container(buffer);
 
         ResourceLocation location("imgui_tess/font_atlas_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+        CrashLog::append(
+            "Backend init: ctx=%p client=%p screen=%p textureGroup=%p sizeof(ResourceLocation)=0x%zX sizeof(ImageBuffer)=0x%zX sizeof(TextureContainer)=0x%zX\r\n",
+            ctx,
+            ctx->clientInstance,
+            ctx->screenContext,
+            ctx->textureGroup.get(),
+            sizeof(ResourceLocation),
+            sizeof(cg::ImageBuffer),
+            sizeof(mce::TextureContainer));
+        CrashLog::append(
+            "Backend init: font=%dx%d bytes=%zu imageResourceVtable=0x%llX\r\n",
+            width, height, byteCount,
+            static_cast<unsigned long long>(signatures::imageResourceVtable()));
+
         CrashLog::checkpoint("backend.initialize: TextureGroup::uploadTexture");
         auto& uploaded = ctx->textureGroup->uploadTexture(
             location, container, std::optional<std::string_view>{"MCBE ImGui Tess font"});
