@@ -1,8 +1,9 @@
-public:
-    std::shared_ptr<BedrockTextureData> clientTexture;
-    std::shared_ptr<ResourceLocation> resourceLocation;
-};
+#pragma once
 
+#include "Resources.hpp"
+#include "../Version/Signatures.hpp"
+
+namespace mce {
 enum class PrimitiveMode : std::uint8_t {
     None, QuadList, TriangleList, TriangleStrip, LineList, LineStrip
 };
@@ -112,3 +113,91 @@ struct RenderMetadata {
 };
 }
 
+
+using TextureBinding = std::variant<std::monostate, TexturePtr, ClientTexture>;
+using OffscreenVariant = std::variant<std::monostate, UIActorOffscreenCaptureDescription,
+    UIThumbnailMeshOffscreenCaptureDescription, UIMeshOffscreenCaptureDescription,
+    UIStructureVolumeOffscreenCaptureDescription>;
+
+class Mesh : public IndexBufferContainer {
+public:
+    std::variant<std::monostate, std::uint64_t, Vec3> cacheKey;
+    bool temporary{};
+    PrimitiveMode primitiveMode{PrimitiveMode::None};
+    std::weak_ptr<BufferResourceService> bufferResourceService;
+    MeshData meshData;
+    ClientResourcePointer<void*> vertexLayout;
+    ClientResourcePointer<void*> vertexBuffer;
+    std::optional<std::uint32_t> vertexCount;
+    VertexFormat layoutFormat;
+    VertexFormat bufferFormat;
+    VertexFormat unknownFormat;
+    std::vector<std::uint8_t> rawData;
+
+    void renderMesh(MeshContext* context, MaterialPtr* material) const {
+        if (!context || !material)
+            return;
+
+        StaticVector<TextureBinding, 8> textures;
+        renderMeshFull(
+            context,
+            material,
+            textures,
+            0,
+            0,
+            UIMeshOffscreenCaptureDescription{},
+            nullptr,
+            {});
+    }
+
+    void renderMesh(MeshContext* context, MaterialPtr* material, const ClientTexture& texture) const {
+        if (!context || !material)
+            return;
+
+        StaticVector<TextureBinding, 8> textures;
+        textures.push_back(texture);
+        renderMeshFull(
+            context,
+            material,
+            textures,
+            0,
+            0,
+            UIMeshOffscreenCaptureDescription{},
+            nullptr,
+            {});
+    }
+
+private:
+    void renderMeshFull(
+        MeshContext* context,
+        MaterialPtr* material,
+        StaticVector<TextureBinding, 8> textures,
+        std::uint32_t startOffset,
+        std::uint32_t count,
+        const OffscreenVariant& offscreen,
+        void* overrideIndexBuffer,
+        const std::optional<dragon_stub::RenderMetadata>& metadata) const {
+
+        const auto address = mcbe::signatures::meshRender();
+        if (!address || !context || !material)
+            return;
+
+        using Method = decltype(&Mesh::renderMeshFull);
+        static_assert(sizeof(Method) == sizeof(std::uintptr_t),
+            "Unexpected member-function-pointer ABI for mce::Mesh.");
+
+        const auto method = std::bit_cast<Method>(address);
+        (this->*method)(
+            context,
+            material,
+            textures,
+            startOffset,
+            count,
+            offscreen,
+            overrideIndexBuffer,
+            metadata);
+    }
+};
+
+
+} // namespace mce

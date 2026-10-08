@@ -2,7 +2,10 @@ build/
 out/
 .vs/
 .idea/
+.vscode/
 *.user
 *.suo
 *.pdb
 *.ilk
+*.dmp
+*.log

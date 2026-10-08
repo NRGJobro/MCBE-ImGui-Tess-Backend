@@ -1,7 +1,7 @@
 #pragma once
 
-#include "MCBE.hpp"
-#include "CrashLogger.hpp"
+#include "mcbe/BedrockSDK.hpp"
+#include "diagnostics/CrashDiagnostics.hpp"
 #include <imgui.h>
 
 #include <algorithm>

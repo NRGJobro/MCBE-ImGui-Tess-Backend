@@ -2,10 +2,10 @@
 #include <MinHook.h>
 #include <imgui.h>
 
-#include "MCBE.hpp"
-#include "CrashLogger.hpp"
-#include "ImGuiTessBackend.hpp"
-#include "WorldPanelDemo.hpp"
+#include "mcbe/BedrockSDK.hpp"
+#include "diagnostics/CrashDiagnostics.hpp"
+#include "backend/ImGuiTessellatorBackend.hpp"
+#include "demo/WorldPanelDemo.hpp"
 #include "mcbe/Input/MouseDevice.hpp"
 
 #include <algorithm>

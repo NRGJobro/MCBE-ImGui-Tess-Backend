@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../MCBE.hpp"
+#include "../BedrockSDK.hpp"
 
 #include <cstdint>
 
@@ -8,7 +8,7 @@ namespace mcbe::world {
 
 struct Quaternion {
     // GLM default in-memory layout is x,y,z,w unless
-    // GLM_FORCE_QUAT_DATA_WXYZ is defined. Phase does not define it.
+    // GLM_FORCE_QUAT_DATA_WXYZ is defined. the target does not override it.
     float x{};
     float y{};
     float z{};

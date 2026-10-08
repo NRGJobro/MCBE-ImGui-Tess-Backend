@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a renderer, input, crash, or compatibility issue
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: input
+    id: bedrock
+    attributes:
+      label: Bedrock build
+      placeholder: "26.52"
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - 2D rendering
+        - World-space rendering
+        - Mouse/input
+        - Crash/unload
+        - Build/toolchain
+        - Version update
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: What happened, what you expected, and exact steps.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Attach or paste session.log, last-stage.log, and crash-last.log when relevant.

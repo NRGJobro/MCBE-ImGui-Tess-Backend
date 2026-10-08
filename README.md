@@ -1,47 +1,36 @@
-# MCBE ImGui Tessellator Backend — Standalone Client
+# MCBE ImGui Tessellator Backend
 
-This is a **standalone injectable Windows x64 DLL** for Minecraft Bedrock **26.52**. It does **not** include, link to, or require Phase, Flow, Stray, or any other client project.
+Standalone experimental Dear ImGui renderer for **Minecraft Bedrock 26.52** that submits ImGui draw data through Minecraft's own **Tessellator / mce::Mesh** path.
 
-Phase/Flow were used only as references for the current MCBE 26.52 ABI/signatures. The required layouts and signatures are copied into this repository under `src/`.
+> **Version locked:** signatures, offsets, ABI layouts, and render materials in this repository target Bedrock 26.52.
 
-## What it does
+## Highlights
 
-After injection it hooks Bedrock's current `ScreenView` / `MinecraftUIRenderContext` render path and draws a small Dear ImGui test window using:
-
-`ImGui draw lists -> Minecraft Tessellator -> mce::Mesh -> im_gui material`
-
-There is no DX11/DX12 ImGui renderer in this project.
-
-The renderer batches adjacent ImGui commands that share a texture and clipping rectangle, pre-reserves Tessellator vertex/color/UV storage, honors `VtxOffset`/`IdxOffset`, and uses Minecraft's known-good `ui_textured` material first, with `im_gui` only as a fallback.
+- No Dear ImGui DX11/DX12 renderer backend.
+- Native Minecraft mouse input.
+- 2D in-game ImGui rendering through the UI Tessellator context.
+- F6 world-space proof demo using the 3D LevelRenderer context.
+- Multiple world panels; F7 removes the newest first.
+- World panels participate in depth testing and can be occluded by blocks.
+- Crash-stage logs and Windows minidumps.
+- Visual Studio 2022 + ClangCL CI build.
 
 ## Controls
 
-- **INSERT** — show/hide the test ImGui window
-- **END** — disable the hook and unload the DLL
+| Key | Action |
+| --- | --- |
+| `INSERT` | Show/hide the normal 2D window |
+| `F6` | Place another world-space panel |
+| `F7` | Remove the newest world-space panel |
+| `END` | Disable hooks and unload |
 
 ## Build
 
-### Toolchain ABI
-
-Do **not** build this engine-facing DLL with the VS 2026 STL. MCBE 26.52/Phase uses the VS 2022-compatible STL ABI, and engine-facing types such as `ResourceLocation` contain `std::string`. The project contains compile-time size checks for `std::string`, `ResourceLocation`, `ImageBuffer`, `TextureDescription`, and `TextureContainer` so an incompatible toolchain fails at build time instead of crashing during `TextureGroup::uploadTexture`.
-
-The CI intentionally matches Phase's current shipping build: **Visual Studio 17 2022 + ClangCL**.
-
-**Do not inject a Debug build.** MSVC Debug STL changes the binary layout of engine-facing types such as `std::string` and `std::vector`. The project now rejects `_DEBUG` / `_ITERATOR_DEBUG_LEVEL != 0` builds at compile time. Use **Release** for injection.
-
-
-Requirements:
-
-- Windows 10/11 x64
-- Visual Studio 2022 with **Desktop development with C++** and the **Clang tools for Windows** component
-- CMake 3.24+
-- Internet access on the first configure so CMake can download pinned Dear ImGui + MinHook
-
-From Developer PowerShell:
+Requirements: Windows x64, Visual Studio 2022, Desktop development with C++, Clang tools for Windows, CMake 3.24+.
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL
-cmake --build build --config Release
+cmake --preset vs2022-clangcl
+cmake --build --preset release
 ```
 
 Output:
@@ -50,68 +39,82 @@ Output:
 build\bin\Release\MCBE-ImGui-Tess.dll
 ```
 
-Inject the DLL into `Minecraft.Windows.exe` using your normal LoadLibrary-compatible injector. A console opens with signature/hook status. When successful, the Tessellator-backed ImGui window appears in-game.
+**Do not inject Debug builds.** Engine-facing MSVC STL layouts differ with iterator debugging enabled; the project intentionally rejects incompatible Debug builds.
 
-## Standalone architecture
+## How it renders
 
-- `src/PatternScanner.hpp` — PE executable-section signature scanner.
-- `src/MCBE.hpp` — only the current Bedrock structures required for this renderer (Tessellator, Mesh, texture upload, UI render context).
-- `src/ImGuiTessBackend.hpp` — efficient ImGui draw-list -> Tessellator translator.
-- `src/main.cpp` — DLL entry point, RenderContext hook, test window and unload handling.
+2D:
 
-## 26.52 data used
+```text
+ImGui draw lists
+ -> MinecraftUIRenderContext
+ -> Tessellator
+ -> mce::Mesh
+ -> Minecraft material
+```
 
-The current signatures were copied from the current Phase 26.52 source for:
+World-space:
 
-- RenderContext hook target
-- `mce::Mesh::_renderMesh`
-- common `mce::RenderMaterialGroup`
-- `mce::TextureGroup::uploadTexture`
-- `cg::ImageResource` vtable
+```text
+ImGui vertex
+ -> panel-local coordinates
+ -> world center/right/up basis
+ -> LevelRenderer ScreenContext
+ -> Tessellator
+ -> mce::Mesh
+```
 
-The current render-layout values used are:
+The F6 panel is fixed world geometry, not a desktop overlay projected onto the screen.
 
-- `ScreenContext::meshContext = 0x10`
-- `ScreenContext::tessellator = 0xB8`
-- `MinecraftUIRenderContext::ScreenContext = 0x10`
-- `MinecraftUIRenderContext::textureGroup = 0x58`
-- `ScreenView::ScreenScale = 0x10`
+## Source layout
 
-When Bedrock updates, these are the only version-sensitive pieces expected to need review.
+```text
+src/
+├── DllMain.cpp
+├── backend/ImGuiTessellatorBackend.hpp
+├── demo/WorldPanelDemo.hpp
+├── diagnostics/CrashDiagnostics.hpp
+└── mcbe/
+    ├── BedrockSDK.hpp
+    ├── Core/Types.hpp
+    ├── Memory/PatternScanner.hpp
+    ├── Version/Signatures.hpp
+    ├── Input/MouseDevice.hpp
+    └── Render/
+        ├── CameraComponent.hpp
+        ├── LevelRenderer.hpp
+        ├── Mesh.hpp
+        ├── Resources.hpp
+        ├── Tessellator.hpp
+        ├── Textures.hpp
+        └── UIContext.hpp
+```
 
-## Notes
+More detail:
 
-This project intentionally contains only a rendering test. It has no gameplay modules, networking modifications, key/auth system, or dependency on Phase's module framework.
+- [Architecture](docs/ARCHITECTURE.md)
+- [Updating for a new Bedrock build](docs/UPDATING-MCBE.md)
+- [Crash reports](docs/CRASH-REPORTS.md)
+- [Contributing](CONTRIBUTING.md)
 
+## Diagnostics
 
-## Crash diagnostics
-
-The DLL installs a read-only vectored exception logger around its own render/backend work. It does **not** swallow access violations; Minecraft's normal exception handling still runs after the log is written.
-
-Logs are stored in:
+Logs are written to:
 
 ```text
 %TEMP%\MCBE-ImGui-Tess\
 ```
 
-Files:
+Start with `session.log`, `last-stage.log`, and `crash-last.log`. Review minidumps before uploading them publicly because they may contain process memory or local paths.
 
-- `session.log` — resolved 26.52 signature addresses and normal startup/unload information.
-- `crash-last.log` — the most recent exception, backend stage, MCBE context/Tessellator pointers, registers, and stack addresses.
-- `crash-last.dmp` — a small Windows minidump for crashes that need deeper inspection.
-- `last-stage.log` — disk-flushed checkpoint of the last dangerous render operation. This is written even when Minecraft terminates before the exception logger can produce `crash-last.log`.
+## Scope
 
-For a crash report, send `crash-last.log` and `session.log` first. The `Stage:` line is specifically updated around font upload, material creation, Tessellator begin/end, clipping, vertex emission, and `mce::Mesh::_renderMesh`.
+This repository contains the renderer, input bridge, proof demo, diagnostics, and only the minimal Bedrock ABI needed by those components. It intentionally does not contain gameplay modules, authentication/licensing code, or another client's framework.
 
+## License
 
+A license has **not been selected yet**. Add an OSI-approved license before presenting the repository as open source.
 
-## World-space proof demo
+## Disclaimer
 
-Press **F6** while in-game to place a copy of the ImGui test window three blocks in front of the current rendered camera. The panel is frozen in world coordinates and is submitted through the current 3D `LevelRenderer` `ScreenContext` and Minecraft `Tessellator`.
-
-- **F6** — place another world-space panel at the current camera pose
-- **F7** — remove the most recently placed world-space panel
-- **INSERT** — show/hide the normal 2D Tessellator copy
-- **END** — uninject
-
-The world panel reuses the same Dear ImGui draw-list vertices and font atlas as the 2D backend, but transforms each vertex into a 3D `center/right/up` basis before mesh submission. It is not a projected screen-space overlay.
+Independent community project; not affiliated with or endorsed by Mojang Studios or Microsoft. Minecraft is a trademark of Microsoft.

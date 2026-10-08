@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MCBEImGuiTessBackend VERSION 0.1.0 LANGUAGES C CXX)
+project(MCBEImGuiTessBackend VERSION 0.2.0 LANGUAGES C CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "This project builds a Windows x64 DLL and must be configured for Windows.")
@@ -14,7 +14,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 
-# Dear ImGui is pinned to the classic renderer API used by this custom backend.
 FetchContent_Declare(
     imgui
     URL https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b.zip
@@ -41,16 +40,24 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(minhook)
 
-add_library(MCBEImGuiTess SHARED
-    src/main.cpp
-    src/PatternScanner.hpp
-    src/MCBE.hpp
-    src/ImGuiTessBackend.hpp
-    src/CrashLogger.hpp
-    src/WorldPanelDemo.hpp
+add_library(MCBEImGuiTess SHARED src/DllMain.cpp)
+
+target_sources(MCBEImGuiTess PRIVATE
+    src/backend/ImGuiTessellatorBackend.hpp
+    src/demo/WorldPanelDemo.hpp
+    src/diagnostics/CrashDiagnostics.hpp
+    src/mcbe/BedrockSDK.hpp
+    src/mcbe/Core/Types.hpp
+    src/mcbe/Memory/PatternScanner.hpp
+    src/mcbe/Version/Signatures.hpp
     src/mcbe/Input/MouseDevice.hpp
     src/mcbe/Render/CameraComponent.hpp
     src/mcbe/Render/LevelRenderer.hpp
+    src/mcbe/Render/Resources.hpp
+    src/mcbe/Render/Mesh.hpp
+    src/mcbe/Render/Textures.hpp
+    src/mcbe/Render/Tessellator.hpp
+    src/mcbe/Render/UIContext.hpp
 )
 
 target_include_directories(MCBEImGuiTess PRIVATE src)

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../MCBE.hpp"
+#include "../BedrockSDK.hpp"
 
 #include <cstdint>
 

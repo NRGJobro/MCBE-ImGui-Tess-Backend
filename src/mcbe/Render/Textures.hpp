@@ -1,3 +1,75 @@
+#pragma once
+
+#include "Resources.hpp"
+#include "../Version/Signatures.hpp"
+
+namespace mce {
+enum class ImageFormat : std::uint32_t {
+    UnknownFormat, R8Unorm, RG8Unorm, RGB8Unorm, RGBA8Unorm, RGBA16Float
+};
+enum class ImageUsage : std::uint8_t { UnknownUsage = 0, sRGB = 1, Data = 2 };
+
+enum class TextureFormat : std::uint32_t {
+    Unknown = 0,
+    R8g8b8a8Unorm = 28
+};
+
+class Blob {
+public:
+    using pointer = std::uint8_t*;
+    using delete_function = void(*)(pointer);
+    struct Deleter {
+        delete_function fn;
+        Deleter() : fn(defaultDeleter) {}
+        explicit Deleter(delete_function value) : fn(value) {}
+        void operator()(pointer p) const { fn(p); }
+        static void defaultDeleter(pointer p) { delete[] p; }
+    };
+    using pointer_type = std::unique_ptr<std::uint8_t[], Deleter>;
+
+    pointer_type blob{};
+    std::size_t size{};
+
+    Blob() = default;
+    Blob(pointer data, std::size_t length) : blob(data), size(length) {}
+    Blob(const Blob& other) { *this = other; }
+    Blob& operator=(const Blob& other) {
+        if (this == &other) return *this;
+        size = other.size;
+        if (!size) { blob.reset(); return *this; }
+        auto* copy = new std::uint8_t[size];
+        std::memcpy(copy, other.blob.get(), size);
+        blob.reset(copy);
+        return *this;
+    }
+};
+
+struct Image {
+    ImageFormat imageFormat{ImageFormat::UnknownFormat};
+    std::uint32_t width{}, height{}, depth{};
+    ImageUsage usage{ImageUsage::UnknownUsage};
+    Blob imageData{};
+};
+
+struct Color {
+    float r{1.f}, g{1.f}, b{1.f}, a{1.f};
+};
+
+struct SampleDescription { int count{1}; int quality{}; };
+enum class BindFlagsBit : std::uint32_t { ShaderResourceBit = 0x8 };
+
+} // namespace mce
+
+namespace cg {
+enum class ColorSpace : std::int8_t { Unknown = 0, sRGB = 1, Linear = 2 };
+enum class ImageType : std::uint8_t { Texture2D, CubemapDeprecated, Texture3D, TextureCube };
+
+struct ImageDescription {
+    std::uint32_t width{}, height{};
+    mce::TextureFormat textureFormat{mce::TextureFormat::Unknown};
+    ColorSpace colorSpace{ColorSpace::Unknown};
+    ImageType imageType{ImageType::Texture2D};
+
     std::uint32_t arraySize{1};
 
     ImageDescription() = default;
@@ -99,29 +171,3 @@ public:
 };
 } // namespace mce
 
-class Tessellator;
-
-struct TessellatorQuadInfo {
-    std::uint8_t facing{};
-    bool twoFace{};
-    Vec3 centroid{};
-};
-
-class Tessellator {
-public:
-    bool isFormatFixed{};
-    mce::MeshData meshData;
-    bool hasNormals{};
-    std::uint64_t nextReserve{};
-    std::optional<Vec4> nextNormal;
-    std::optional<Vec2> nextUV[3];
-    std::optional<std::uint32_t> nextColor;
-    std::optional<std::uint16_t> nextBoneId;
-    std::optional<std::uint16_t> nextPBRTextureIdx;
-    std::optional<std::uint32_t> nextMers;
-    bool indexPhase{};
-    Vec3 postTransformationOffset{};
-    Vec3 postTransformationScale{};
-    std::uint8_t quadFacing{};
-    bool quadTwoSided{};
-    std::vector<TessellatorQuadInfo> quadInfoList;

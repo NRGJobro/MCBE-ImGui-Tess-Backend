@@ -156,7 +156,7 @@ private:
     }
 
     static Vec3 rotate(const world::Quaternion& q, const Vec3& v) {
-        // Phase 26.52 stores CameraComponent::quat at 0x30 and uses
+        // Bedrock 26.52 stores CameraComponent::quat at 0x30 and uses
         // GLM's default x,y,z,w memory layout.
         const Vec3 qv{q.x, q.y, q.z};
         const Vec3 t = mul(cross(qv, v), 2.f);
