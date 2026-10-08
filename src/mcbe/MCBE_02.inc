@@ -80,8 +80,10 @@ class RenderMaterialGroup {};
 class MaterialPtr {
     char pad_[0x138]{};
 public:
-    static MaterialPtr* createMaterial(const HashedString& name) {
-        auto* group = reinterpret_cast<RenderMaterialGroup*>(mcbe::signatures::materialCommon());
+    static MaterialPtr* createMaterial(const HashedString& name, bool switchable = false) {
+        auto* group = reinterpret_cast<RenderMaterialGroup*>(
+            switchable ? mcbe::signatures::materialSwitchable()
+                       : mcbe::signatures::materialCommon());
         if (!group)
             return nullptr;
 
