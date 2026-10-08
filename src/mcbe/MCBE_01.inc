@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -40,6 +43,40 @@ struct Rect {
     // Bedrock's UI rectangle ABI is left, right, top, bottom.
     float left{}, right{}, top{}, bottom{};
 };
+
+namespace mcbe::abi {
+
+template <std::size_t Index, typename Return, typename Instance, typename... Args>
+Return callVFunc(Instance* instance, Args&&... args) {
+    if (!instance) {
+        if constexpr (std::is_void_v<Return>)
+            return;
+        else
+            return Return{};
+    }
+
+    auto** vtable = *reinterpret_cast<void***>(instance);
+    if (!vtable || !vtable[Index]) {
+        if constexpr (std::is_void_v<Return>)
+            return;
+        else
+            return Return{};
+    }
+
+    using Method = Return(Instance::*)(Args...);
+    static_assert(sizeof(Method) == sizeof(void*),
+        "This helper expects the MSVC/ClangCL single-inheritance member-function ABI.");
+
+    const auto method = std::bit_cast<Method>(vtable[Index]);
+    if constexpr (std::is_void_v<Return>) {
+        (instance->*method)(std::forward<Args>(args)...);
+        return;
+    } else {
+        return (instance->*method)(std::forward<Args>(args)...);
+    }
+}
+
+} // namespace mcbe::abi
 
 template <typename T, std::size_t Size>
 class StaticVector {
