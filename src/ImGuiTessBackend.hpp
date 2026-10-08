@@ -59,21 +59,29 @@ public:
             width, height, byteCount,
             static_cast<unsigned long long>(signatures::imageResourceVtable()));
 
-        // Match the known-good MCBE ImGui path: upload an ImageBuffer, then ask the
-        // UI render context for the finished TexturePtr instead of depending on the
-        // returned BedrockTexture object's full ABI.
+        // TextureGroup::uploadTexture returns a BedrockTexture&. Keep the returned
+        // shared BedrockTextureData alive and copy its ClientTexture directly. This
+        // avoids MinecraftUIRenderContext::getTexture's non-trivial return ABI.
         CrashLog::checkpoint("backend.initialize: TextureGroup::uploadTexture(ImageBuffer)");
-        (void)ctx->textureGroup->uploadTexture(location, buffer);
+        auto& uploaded = ctx->textureGroup->uploadTexture(location, buffer);
 
-        CrashLog::checkpoint("backend.initialize: MinecraftUIRenderContext::getTexture");
-        auto loaded = ctx->getTexture(location, false);
-        if (!loaded.clientTexture ||
-            !loaded.clientTexture->clientTexture.resourcePointerBlock) {
+        CrashLog::checkpoint("backend.initialize: validate uploaded BedrockTexture");
+        if (!uploaded.texture ||
+            !uploaded.texture->clientTexture.resourcePointerBlock) {
+            CrashLog::append(
+                "Backend init: upload returned invalid texture data: bedrock=%p texture=%p\r\n",
+                &uploaded,
+                uploaded.texture.get());
             return false;
         }
 
-        fontTexturePtr_ = std::move(loaded);
-        fontTexture_ = fontTexturePtr_.clientTexture->clientTexture;
+        fontTextureData_ = uploaded.texture;
+        fontTexture_ = fontTextureData_->clientTexture;
+        CrashLog::append(
+            "Backend init: upload OK bedrock=%p data=%p resource=%p\r\n",
+            &uploaded,
+            fontTextureData_.get(),
+            fontTexture_.resourcePointerBlock.get());
         io.Fonts->SetTexID(toTextureId(&fontTexture_));
         io.BackendRendererName = "mcbe_tessellator_26_52";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -238,7 +246,7 @@ private:
 
     bool initialized_{};
     mce::MaterialPtr* material_{};
-    mce::TexturePtr fontTexturePtr_{};
+    std::shared_ptr<mce::BedrockTextureData> fontTextureData_{};
     mce::ClientTexture fontTexture_{};
 };
 
