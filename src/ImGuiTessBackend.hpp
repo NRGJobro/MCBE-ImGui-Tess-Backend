@@ -5,10 +5,9 @@
 #include <imgui.h>
 
 #include <algorithm>
-#include <array>
 #include <climits>
-#include <cmath>
 #include <cstdint>
+#include <vector>
 
 namespace mcbe {
 
@@ -326,141 +325,15 @@ public:
                    nearUv(d.uv, fontWhiteUv_);
         };
 
-        struct ClippedVertex {
-            ImVec2 pos{};
-            ImVec2 uv{};
-            ImU32 col{};
-        };
-
-        const auto lerpColor = [](ImU32 a, ImU32 b, float t) -> ImU32 {
-            const auto channel = [t](unsigned av, unsigned bv) -> unsigned {
-                return static_cast<unsigned>(
-                    static_cast<float>(av) +
-                    (static_cast<float>(bv) - static_cast<float>(av)) * t +
-                    0.5f);
-            };
-
-            const unsigned ar = (a      ) & 0xFFu;
-            const unsigned ag = (a >>  8) & 0xFFu;
-            const unsigned ab = (a >> 16) & 0xFFu;
-            const unsigned aa = (a >> 24) & 0xFFu;
-
-            const unsigned br = (b      ) & 0xFFu;
-            const unsigned bg = (b >>  8) & 0xFFu;
-            const unsigned bb = (b >> 16) & 0xFFu;
-            const unsigned ba = (b >> 24) & 0xFFu;
-
-            return
-                channel(ar, br) |
-                (channel(ag, bg) << 8) |
-                (channel(ab, bb) << 16) |
-                (channel(aa, ba) << 24);
-        };
-
-        const auto interpolate = [&](const ClippedVertex& a,
-                                     const ClippedVertex& b,
-                                     float t) -> ClippedVertex {
-            t = std::clamp(t, 0.0f, 1.0f);
-            return {
-                {
-                    a.pos.x + (b.pos.x - a.pos.x) * t,
-                    a.pos.y + (b.pos.y - a.pos.y) * t
-                },
-                {
-                    a.uv.x + (b.uv.x - a.uv.x) * t,
-                    a.uv.y + (b.uv.y - a.uv.y) * t
-                },
-                lerpColor(a.col, b.col, t)
-            };
-        };
-
-        const auto clipTriangle = [&](const ImDrawVert& va,
-                                      const ImDrawVert& vb,
-                                      const ImDrawVert& vc,
-                                      const ImVec4& clip,
-                                      std::array<ClippedVertex, 12>& result) -> int {
-            std::array<ClippedVertex, 12> a{};
-            std::array<ClippedVertex, 12> b{};
-
-            a[0] = {va.pos, va.uv, va.col};
-            a[1] = {vb.pos, vb.uv, vb.col};
-            a[2] = {vc.pos, vc.uv, vc.col};
-            int count = 3;
-
-            const auto clipEdge = [&](int edge, float boundary) {
-                if (count <= 0)
-                    return;
-
-                int outCount = 0;
-
-                const auto inside = [&](const ClippedVertex& v) {
-                    switch (edge) {
-                    case 0: return v.pos.x >= boundary; // left
-                    case 1: return v.pos.x <= boundary; // right
-                    case 2: return v.pos.y >= boundary; // top
-                    default:return v.pos.y <= boundary; // bottom
-                    }
-                };
-
-                const auto intersect = [&](const ClippedVertex& from,
-                                           const ClippedVertex& to) {
-                    float denominator = 0.0f;
-                    float numerator = 0.0f;
-
-                    if (edge <= 1) {
-                        denominator = to.pos.x - from.pos.x;
-                        numerator = boundary - from.pos.x;
-                    } else {
-                        denominator = to.pos.y - from.pos.y;
-                        numerator = boundary - from.pos.y;
-                    }
-
-                    const float t =
-                        std::abs(denominator) > 0.000001f
-                            ? numerator / denominator
-                            : 0.0f;
-                    return interpolate(from, to, t);
-                };
-
-                ClippedVertex previous = a[count - 1];
-                bool previousInside = inside(previous);
-
-                for (int i = 0; i < count; ++i) {
-                    const ClippedVertex current = a[i];
-                    const bool currentInside = inside(current);
-
-                    if (currentInside != previousInside && outCount < 12)
-                        b[outCount++] = intersect(previous, current);
-
-                    if (currentInside && outCount < 12)
-                        b[outCount++] = current;
-
-                    previous = current;
-                    previousInside = currentInside;
-                }
-
-                a = b;
-                count = outCount;
-            };
-
-            clipEdge(0, clip.x);
-            clipEdge(1, clip.z);
-            clipEdge(2, clip.y);
-            clipEdge(3, clip.w);
-
-            for (int i = 0; i < count; ++i)
-                result[i] = a[i];
-
-            return count;
-        };
+        // ImGui is a painter's-order renderer. In world space we preserve that
+        // order by assigning one microscopic depth layer per *primitive*.
+        // A primitive may be a single triangle (collapse arrow) or two triangles
+        // sharing an edge (rect/line/progress bar quad).
+        std::uint32_t solidPrimitiveOrdinal = 0;
 
         for (int commandIndex = 0; commandIndex < list->CmdBuffer.Size; ++commandIndex) {
             const ImDrawCmd& cmd = list->CmdBuffer[commandIndex];
             if (cmd.UserCallback || cmd.ElemCount < 3)
-                continue;
-
-            if (cmd.ClipRect.x >= cmd.ClipRect.z ||
-                cmd.ClipRect.y >= cmd.ClipRect.w)
                 continue;
 
             const ImTextureID texture =
@@ -488,20 +361,15 @@ public:
                         matchedElements += 3;
                 }
 
-                if (!matchedElements || tess->tessellating || tess->overridden)
+                if (!matchedElements)
                     return;
 
-                // One clipped triangle can become a polygon of up to seven
-                // vertices, or five output triangles. Reserve that worst case
-                // without changing the actual submitted vertex count.
-                const std::uint64_t worstCase =
-                    static_cast<std::uint64_t>(matchedElements) * 5ull;
-                const int reserve = static_cast<int>(
-                    std::min<std::uint64_t>(
-                        worstCase,
-                        static_cast<std::uint64_t>(INT_MAX)));
+                if (tess->tessellating || tess->overridden)
+                    return;
 
-                tess->begin(mce::PrimitiveMode::TriangleList, reserve);
+                tess->begin(
+                    mce::PrimitiveMode::TriangleList,
+                    static_cast<int>(matchedElements));
                 if (!tess->tessellating)
                     return;
 
@@ -513,63 +381,117 @@ public:
                 auto& colors = tess->meshData.colors;
                 auto& uvs = tess->meshData.textureUVs[0];
 
-                // sign_text now handles solid ImGui geometry correctly, so keep
-                // every solid primitive on one stable plane and let ImGui's
-                // original triangle order do the painting. Text remains slightly
-                // forward to avoid fighting the panel background.
-                constexpr float kSolidBias = 0.0010f;
-                constexpr float kTextBias = 0.0100f;
-                const float frontBias = solidPass ? kSolidBias : kTextBias;
+                positions.reserve(positions.size() + matchedElements);
+                colors.reserve(colors.size() + matchedElements);
+                uvs.reserve(uvs.size() + matchedElements);
 
-                const auto emit = [&](const ClippedVertex& vertex) {
-                    ImDrawVert converted{};
-                    converted.pos = vertex.pos;
-                    converted.uv = vertex.uv;
-                    converted.col = vertex.col;
+                // Both passes stay world-depth-tested. Text gets one stable
+                // foreground plane. Solid ImGui shapes are layered by connected
+                // component, not by individual triangle. This keeps rounded
+                // rectangles, progress fills and scroll thumbs perfectly coplanar.
+                constexpr float kSolidBaseBias = 0.0005f;
+                constexpr float kSolidLayerStep = 0.00015f;
+                constexpr std::uint32_t kMaxSolidLayers = 48;
+                constexpr float kTextBias = 0.0120f;
 
-                    positions.push_back(toWorldLocal(converted, frontBias));
+                const auto emitVertex = [&](const ImDrawVert& vertex, float frontBias) {
+                    positions.push_back(toWorldLocal(vertex, frontBias));
                     colors.push_back(vertex.col);
                     uvs.push_back({vertex.uv.x, vertex.uv.y});
                 };
 
-                std::array<ClippedVertex, 12> polygon{};
+                if (!solidPass) {
+                    for (unsigned i = 0; i < usable; i += 3) {
+                        const ImDrawVert& a = vertices[indices[i + 0]];
+                        const ImDrawVert& b = vertices[indices[i + 1]];
+                        const ImDrawVert& d = vertices[indices[i + 2]];
+                        if (isSolidTriangle(a, b, d))
+                            continue;
 
-                for (unsigned i = 0; i < usable; i += 3) {
-                    const ImDrawVert& a = vertices[indices[i + 0]];
-                    const ImDrawVert& b = vertices[indices[i + 1]];
-                    const ImDrawVert& d = vertices[indices[i + 2]];
+                        emitVertex(d, kTextBias);
+                        emitVertex(b, kTextBias);
+                        emitVertex(a, kTextBias);
+                    }
+                } else {
+                    // A single ImGui primitive may contain many connected
+                    // triangles (rounded rects are the important case). Keep
+                    // collecting consecutive solid triangles while they share
+                    // any vertex with the current component.
+                    std::vector<ImDrawIdx> componentVertices;
+                    componentVertices.reserve(32);
 
-                    if (isSolidTriangle(a, b, d) != solidPass)
-                        continue;
+                    bool componentActive = false;
+                    float componentBias = kSolidBaseBias;
 
-                    const int polygonCount =
-                        clipTriangle(a, b, d, cmd.ClipRect, polygon);
-                    if (polygonCount < 3)
-                        continue;
+                    const auto startComponent = [&]() {
+                        const std::uint32_t layer =
+                            std::min<std::uint32_t>(
+                                solidPrimitiveOrdinal,
+                                kMaxSolidLayers);
+                        componentBias =
+                            kSolidBaseBias +
+                            static_cast<float>(layer) * kSolidLayerStep;
+                        ++solidPrimitiveOrdinal;
+                        componentVertices.clear();
+                        componentActive = true;
+                    };
 
-                    // Fan-triangulate the clipped polygon. Mapping ImGui's
-                    // Y-down plane into our Y-up world basis reverses winding,
-                    // so emit each triangle in reverse order.
-                    for (int p = 1; p + 1 < polygonCount; ++p) {
-                        emit(polygon[p + 1]);
-                        emit(polygon[p]);
-                        emit(polygon[0]);
+                    const auto componentContains = [&](ImDrawIdx index) {
+                        return std::find(
+                            componentVertices.begin(),
+                            componentVertices.end(),
+                            index) != componentVertices.end();
+                    };
+
+                    const auto rememberVertex = [&](ImDrawIdx index) {
+                        if (!componentContains(index))
+                            componentVertices.push_back(index);
+                    };
+
+                    for (unsigned i = 0; i < usable; i += 3) {
+                        const ImDrawIdx ia = indices[i + 0];
+                        const ImDrawIdx ib = indices[i + 1];
+                        const ImDrawIdx id = indices[i + 2];
+
+                        const ImDrawVert& a = vertices[ia];
+                        const ImDrawVert& b = vertices[ib];
+                        const ImDrawVert& d = vertices[id];
+
+                        if (!isSolidTriangle(a, b, d)) {
+                            // Text/image geometry breaks solid primitive
+                            // continuity in ImGui's painter stream.
+                            componentActive = false;
+                            componentVertices.clear();
+                            continue;
+                        }
+
+                        const bool touchesCurrent =
+                            componentActive &&
+                            (componentContains(ia) ||
+                             componentContains(ib) ||
+                             componentContains(id));
+
+                        if (!touchesCurrent)
+                            startComponent();
+
+                        rememberVertex(ia);
+                        rememberVertex(ib);
+                        rememberVertex(id);
+
+                        emitVertex(d, componentBias);
+                        emitVertex(b, componentBias);
+                        emitVertex(a, componentBias);
                     }
                 }
 
                 tess->count = static_cast<int>(positions.size());
 
-                if (tess->count <= 0) {
-                    tess->clear();
-                    return;
-                }
-
                 mce::Mesh mesh{};
                 if (tess->endTransient(mesh)) {
                     CrashLog::setStage(
                         solidPass
-                            ? "backend.world: submit clipped fill"
-                            : "backend.world: submit clipped text");
+                            ? "backend.world: submit fill"
+                            : "backend.world: submit text");
                     mesh.renderMesh(
                         screen->toMeshContext(),
                         material,
@@ -578,9 +500,8 @@ public:
                 }
             };
 
-            // Both passes now honor ImGui's command clip rectangle in geometry
-            // space. This is required for scrollbars and animated/clipped widgets
-            // because a 3D ScreenContext cannot use the ordinary 2D ImGui scissor.
+            // Submit fills first, then text on top. Both materials are world-space
+            // depth-tested; only their sampling/blending behavior differs.
             submitPass(true, worldFillMaterial_);
             submitPass(false, worldTextMaterial_);
         }
