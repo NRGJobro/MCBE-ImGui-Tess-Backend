@@ -47,7 +47,10 @@ add_library(MCBEImGuiTess SHARED
     src/MCBE.hpp
     src/ImGuiTessBackend.hpp
     src/CrashLogger.hpp
+    src/WorldPanelDemo.hpp
     src/mcbe/Input/MouseDevice.hpp
+    src/mcbe/Render/CameraComponent.hpp
+    src/mcbe/Render/LevelRenderer.hpp
 )
 
 target_include_directories(MCBEImGuiTess PRIVATE src)
