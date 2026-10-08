@@ -151,8 +151,17 @@ public:
                 }
 
                 const int reserve = static_cast<int>(std::min<std::uint64_t>(totalElements, INT_MAX));
+                if (tess->tessellating || tess->overridden) {
+                    commandIndex = runEnd;
+                    continue;
+                }
+
                 CrashLog::checkpoint("backend.render: Tessellator::begin");
                 tess->begin(mce::PrimitiveMode::TriangleList, reserve);
+                if (!tess->tessellating) {
+                    commandIndex = runEnd;
+                    continue;
+                }
                 tess->meshData.colors.reserve(tess->meshData.colors.size() + static_cast<std::size_t>(reserve));
                 tess->meshData.textureUVs[0].reserve(tess->meshData.textureUVs[0].size() + static_cast<std::size_t>(reserve));
 
@@ -226,24 +235,48 @@ private:
     static void emitCommand(Tessellator& tess, const ImDrawList& list, const ImDrawCmd& cmd, const ImVec2& displayPos, float scale) {
         const ImDrawVert* vertices = list.VtxBuffer.Data + cmd.VtxOffset;
         const ImDrawIdx* indices = list.IdxBuffer.Data + cmd.IdxOffset;
-        const unsigned usable = cmd.ElemCount - (cmd.ElemCount % 3u);
+        unsigned usable = cmd.ElemCount - (cmd.ElemCount % 3u);
+
+        if (tess.maxFaces > 0) {
+            const int remaining = tess.maxFaces - tess.count;
+            if (remaining <= 0)
+                return;
+            usable = std::min<unsigned>(usable, static_cast<unsigned>(remaining));
+            usable -= usable % 3u;
+        }
+
+        if (!usable)
+            return;
+
+        // ImGui's ImU32 is already packed as AABBGGRR on little-endian Windows,
+        // exactly matching Tessellator::color's packed integer representation.
+        // Write the three streams directly instead of updating optional
+        // nextColor/nextUV state for every vertex.
+        tess.meshData.enableField(mce::VertexField::Color);
+        tess.meshData.enableField(mce::VertexField::UV0);
+        tess.isFormatFixed = true;
+
+        auto& positions = tess.meshData.positions;
+        auto& colors = tess.meshData.colors;
+        auto& uvs = tess.meshData.textureUVs[0];
+
+        const auto emit = [&](const ImDrawVert& vertex) {
+            positions.push_back({
+                (vertex.pos.x - displayPos.x) / scale,
+                (vertex.pos.y - displayPos.y) / scale,
+                0.0f});
+            colors.push_back(vertex.col);
+            uvs.push_back({vertex.uv.x, vertex.uv.y});
+        };
 
         for (unsigned i = 0; i < usable; i += 3) {
             // Bedrock's UI material needs the reverse of ImGui's default DX winding.
-            emitVertex(tess, vertices[indices[i + 2]], displayPos, scale);
-            emitVertex(tess, vertices[indices[i + 1]], displayPos, scale);
-            emitVertex(tess, vertices[indices[i + 0]], displayPos, scale);
+            emit(vertices[indices[i + 2]]);
+            emit(vertices[indices[i + 1]]);
+            emit(vertices[indices[i + 0]]);
         }
-    }
 
-    static void emitVertex(Tessellator& tess, const ImDrawVert& vertex, const ImVec2& displayPos, float scale) {
-        const std::uint32_t c = vertex.col;
-        tess.color(
-            static_cast<std::uint8_t>(c & 0xFFu),
-            static_cast<std::uint8_t>((c >> 8) & 0xFFu),
-            static_cast<std::uint8_t>((c >> 16) & 0xFFu),
-            static_cast<std::uint8_t>((c >> 24) & 0xFFu));
-        tess.vertexUV((vertex.pos.x - displayPos.x) / scale, (vertex.pos.y - displayPos.y) / scale, 0.0f, vertex.uv.x, vertex.uv.y);
+        tess.count += static_cast<int>(usable);
     }
 
     bool initialized_{};
