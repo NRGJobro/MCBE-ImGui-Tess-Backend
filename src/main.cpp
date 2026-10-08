@@ -300,7 +300,11 @@ void drawTestWindow() {
         ImGui::Separator();
         ImGui::TextUnformatted("ImGui draw lists -> Minecraft Tessellator -> mce::Mesh");
         ImGui::Text("Frame rate: %.1f", ImGui::GetIO().Framerate);
-        ImGui::Text("Mouse: %.0f, %.0f", ImGui::GetIO().MousePos.x, ImGui::GetIO().MousePos.y);
+        const ImGuiIO& io = ImGui::GetIO();
+        ImGui::Text("Mouse: %.0f, %.0f", io.MousePos.x, io.MousePos.y);
+        ImGui::Text("LMB: %s   CaptureMouse: %s",
+            io.MouseDown[0] ? "DOWN" : "up",
+            io.WantCaptureMouse ? "yes" : "no");
         ImGui::Spacing();
         ImGui::TextUnformatted("Drag this title bar to verify input.");
         ImGui::TextUnformatted("INSERT: show/hide this window");
