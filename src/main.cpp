@@ -319,7 +319,8 @@ void drawTestWindow() {
         ImGui::TextUnformatted("Input source: Minecraft MouseDevice");
         ImGui::TextUnformatted("Drag/resize this window to verify native input.");
         ImGui::Text("World panels: %zu", g_worldPanel.count());
-        ImGui::Text("3D material: %s", g_renderer.worldMaterialName());
+        ImGui::Text("3D fill: %s", g_renderer.worldFillMaterialName());
+        ImGui::Text("3D text: %s", g_renderer.worldTextMaterialName());
         ImGui::TextUnformatted("F6: place another 3D world panel");
         ImGui::TextUnformatted("F7: remove newest world panel");
         ImGui::TextUnformatted("INSERT: show/hide 2D copy   END: uninject");
