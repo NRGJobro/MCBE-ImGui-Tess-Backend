@@ -169,11 +169,13 @@ public:
                     clientTexture = &fontTexture_;
 
                 if (clientTexture && clientTexture->resourcePointerBlock) {
-                    CrashLog::setStage("backend.render: Tessellator::end");
+                    CrashLog::setStage("backend.render: Tessellator::endTransient");
                     mce::Mesh mesh{};
-                    tess->end(mesh);
-                    CrashLog::checkpoint("backend.render: mce::Mesh::_renderMesh");
-                    mesh.renderMesh(ctx->screenContext->toMeshContext(), material_, *clientTexture);
+                    if (tess->endTransient(mesh)) {
+                        CrashLog::checkpoint("backend.render: mce::Mesh::_renderMesh");
+                        mesh.renderMesh(ctx->screenContext->toMeshContext(), material_, *clientTexture);
+                        tess->reclaimTransient(mesh);
+                    }
                 } else {
                     tess->clear();
                 }
