@@ -392,6 +392,8 @@ public:
                 constexpr float kSolidLayerStep = 0.000025f;
                 constexpr std::uint32_t kMaxSolidLayers = 384;
                 constexpr float kScrollbarBackgroundBias = 0.0060f;
+                constexpr float kProgressBackgroundBias = 0.0075f;
+                constexpr float kSeparatorBias = 0.0080f;
                 constexpr float kSpecialWidgetBias = 0.0090f;
                 constexpr float kTextBias = 0.0120f;
 
@@ -401,6 +403,18 @@ public:
                 // those moving/rounded widgets coplanar without affecting the
                 // title bar, arrow, separators, borders, etc.
                 const ImGuiStyle& worldStyle = ImGui::GetStyle();
+                const ImU32 frameBg =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_FrameBg]);
+                const ImU32 separator =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_Separator]);
+                const ImU32 separatorHovered =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_SeparatorHovered]);
+                const ImU32 separatorActive =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_SeparatorActive]);
                 const ImU32 plotHistogram =
                     ImGui::ColorConvertFloat4ToU32(
                         worldStyle.Colors[ImGuiCol_PlotHistogram]);
@@ -436,6 +450,14 @@ public:
                         a.col == scrollbarGrabHovered ||
                         a.col == scrollbarGrabActive)
                         return kSpecialWidgetBias;
+
+                    if (a.col == frameBg)
+                        return kProgressBackgroundBias;
+
+                    if (a.col == separator ||
+                        a.col == separatorHovered ||
+                        a.col == separatorActive)
+                        return kSeparatorBias;
 
                     if (a.col == scrollbarBg)
                         return kScrollbarBackgroundBias;
