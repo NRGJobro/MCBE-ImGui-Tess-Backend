@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <climits>
 #include <cstdint>
-#include <vector>
 
 namespace mcbe {
 
@@ -385,14 +384,64 @@ public:
                 colors.reserve(colors.size() + matchedElements);
                 uvs.reserve(uvs.size() + matchedElements);
 
-                // Both passes stay world-depth-tested. Text gets one stable
-                // foreground plane. Solid ImGui shapes are layered by connected
-                // component, not by individual triangle. This keeps rounded
-                // rectangles, progress fills and scroll thumbs perfectly coplanar.
+                // Both passes stay world-depth-tested. Text gets its own stable
+                // foreground layer. Solid UI geometry follows ImGui painter order,
+                // but we group connected triangle pairs so both halves of a quad
+                // always remain perfectly coplanar.
                 constexpr float kSolidBaseBias = 0.0005f;
-                constexpr float kSolidLayerStep = 0.00015f;
-                constexpr std::uint32_t kMaxSolidLayers = 48;
+                constexpr float kSolidLayerStep = 0.000025f;
+                constexpr std::uint32_t kMaxSolidLayers = 384;
+                constexpr float kScrollbarBackgroundBias = 0.0060f;
+                constexpr float kSpecialWidgetBias = 0.0090f;
                 constexpr float kTextBias = 0.0120f;
+
+                // The general solid path below is the known-good renderer.
+                // Only the two problem widget families get fixed depth planes:
+                // progress fills and scrollbars. This keeps every triangle of
+                // those moving/rounded widgets coplanar without affecting the
+                // title bar, arrow, separators, borders, etc.
+                const ImGuiStyle& worldStyle = ImGui::GetStyle();
+                const ImU32 plotHistogram =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_PlotHistogram]);
+                const ImU32 plotHistogramHovered =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_PlotHistogramHovered]);
+                const ImU32 scrollbarBg =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_ScrollbarBg]);
+                const ImU32 scrollbarGrab =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_ScrollbarGrab]);
+                const ImU32 scrollbarGrabHovered =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_ScrollbarGrabHovered]);
+                const ImU32 scrollbarGrabActive =
+                    ImGui::ColorConvertFloat4ToU32(
+                        worldStyle.Colors[ImGuiCol_ScrollbarGrabActive]);
+
+                const auto specialSolidBias = [&](const ImDrawVert& a,
+                                                  const ImDrawVert& b,
+                                                  const ImDrawVert& d,
+                                                  float fallback) {
+                    // ImGui's solid widgets normally use one packed color for
+                    // the whole primitive. Require all three vertices to match
+                    // before applying a widget-specific plane.
+                    if (a.col != b.col || a.col != d.col)
+                        return fallback;
+
+                    if (a.col == plotHistogram ||
+                        a.col == plotHistogramHovered ||
+                        a.col == scrollbarGrab ||
+                        a.col == scrollbarGrabHovered ||
+                        a.col == scrollbarGrabActive)
+                        return kSpecialWidgetBias;
+
+                    if (a.col == scrollbarBg)
+                        return kScrollbarBackgroundBias;
+
+                    return fallback;
+                };
 
                 const auto emitVertex = [&](const ImDrawVert& vertex, float frontBias) {
                     positions.push_back(toWorldLocal(vertex, frontBias));
@@ -400,88 +449,95 @@ public:
                     uvs.push_back({vertex.uv.x, vertex.uv.y});
                 };
 
-                if (!solidPass) {
-                    for (unsigned i = 0; i < usable; i += 3) {
-                        const ImDrawVert& a = vertices[indices[i + 0]];
-                        const ImDrawVert& b = vertices[indices[i + 1]];
-                        const ImDrawVert& d = vertices[indices[i + 2]];
-                        if (isSolidTriangle(a, b, d))
-                            continue;
+                const auto sameVertexIndex = [](ImDrawIdx lhs, ImDrawIdx rhs) {
+                    return lhs == rhs;
+                };
 
+                const auto trianglesShareEdge = [&](unsigned first, unsigned second) {
+                    if (first + 2 >= usable || second + 2 >= usable)
+                        return false;
+
+                    const ImDrawIdx a0 = indices[first + 0];
+                    const ImDrawIdx a1 = indices[first + 1];
+                    const ImDrawIdx a2 = indices[first + 2];
+                    const ImDrawIdx b0 = indices[second + 0];
+                    const ImDrawIdx b1 = indices[second + 1];
+                    const ImDrawIdx b2 = indices[second + 2];
+
+                    unsigned shared = 0;
+                    const ImDrawIdx av[3]{a0, a1, a2};
+                    const ImDrawIdx bv[3]{b0, b1, b2};
+                    for (ImDrawIdx va : av) {
+                        for (ImDrawIdx vb : bv) {
+                            if (sameVertexIndex(va, vb)) {
+                                ++shared;
+                                break;
+                            }
+                        }
+                    }
+                    return shared >= 2;
+                };
+
+                for (unsigned i = 0; i < usable;) {
+                    const ImDrawVert& a = vertices[indices[i + 0]];
+                    const ImDrawVert& b = vertices[indices[i + 1]];
+                    const ImDrawVert& d = vertices[indices[i + 2]];
+
+                    const bool isSolid = isSolidTriangle(a, b, d);
+                    if (isSolid != solidPass) {
+                        i += 3;
+                        continue;
+                    }
+
+                    if (!solidPass) {
                         emitVertex(d, kTextBias);
                         emitVertex(b, kTextBias);
                         emitVertex(a, kTextBias);
+                        i += 3;
+                        continue;
                     }
-                } else {
-                    // A single ImGui primitive may contain many connected
-                    // triangles (rounded rects are the important case). Keep
-                    // collecting consecutive solid triangles while they share
-                    // any vertex with the current component.
-                    std::vector<ImDrawIdx> componentVertices;
-                    componentVertices.reserve(32);
 
-                    bool componentActive = false;
-                    float componentBias = kSolidBaseBias;
+                    const std::uint32_t layer =
+                        std::min<std::uint32_t>(
+                            solidPrimitiveOrdinal,
+                            kMaxSolidLayers);
+                    float frontBias =
+                        kSolidBaseBias +
+                        static_cast<float>(layer) * kSolidLayerStep;
+                    frontBias = specialSolidBias(a, b, d, frontBias);
 
-                    const auto startComponent = [&]() {
-                        const std::uint32_t layer =
-                            std::min<std::uint32_t>(
-                                solidPrimitiveOrdinal,
-                                kMaxSolidLayers);
-                        componentBias =
-                            kSolidBaseBias +
-                            static_cast<float>(layer) * kSolidLayerStep;
-                        ++solidPrimitiveOrdinal;
-                        componentVertices.clear();
-                        componentActive = true;
-                    };
+                    // First triangle of this primitive.
+                    emitVertex(d, frontBias);
+                    emitVertex(b, frontBias);
+                    emitVertex(a, frontBias);
 
-                    const auto componentContains = [&](ImDrawIdx index) {
-                        return std::find(
-                            componentVertices.begin(),
-                            componentVertices.end(),
-                            index) != componentVertices.end();
-                    };
+                    // If the immediately following solid triangle shares an edge,
+                    // it is the second half of the same ImGui quad. Keep it on the
+                    // exact same world-space depth.
+                    if (i + 5 < usable) {
+                        const ImDrawVert& na = vertices[indices[i + 3]];
+                        const ImDrawVert& nb = vertices[indices[i + 4]];
+                        const ImDrawVert& nd = vertices[indices[i + 5]];
 
-                    const auto rememberVertex = [&](ImDrawIdx index) {
-                        if (!componentContains(index))
-                            componentVertices.push_back(index);
-                    };
-
-                    for (unsigned i = 0; i < usable; i += 3) {
-                        const ImDrawIdx ia = indices[i + 0];
-                        const ImDrawIdx ib = indices[i + 1];
-                        const ImDrawIdx id = indices[i + 2];
-
-                        const ImDrawVert& a = vertices[ia];
-                        const ImDrawVert& b = vertices[ib];
-                        const ImDrawVert& d = vertices[id];
-
-                        if (!isSolidTriangle(a, b, d)) {
-                            // Text/image geometry breaks solid primitive
-                            // continuity in ImGui's painter stream.
-                            componentActive = false;
-                            componentVertices.clear();
+                        if (isSolidTriangle(na, nb, nd) &&
+                            trianglesShareEdge(i, i + 3)) {
+                            // If the second half is one of the explicitly
+                            // handled widgets, keep the entire quad on that
+                            // widget's fixed depth plane as well.
+                            const float pairedBias =
+                                specialSolidBias(na, nb, nd, frontBias);
+                            emitVertex(nd, pairedBias);
+                            emitVertex(nb, pairedBias);
+                            emitVertex(na, pairedBias);
+                            i += 6;
+                            ++solidPrimitiveOrdinal;
                             continue;
                         }
-
-                        const bool touchesCurrent =
-                            componentActive &&
-                            (componentContains(ia) ||
-                             componentContains(ib) ||
-                             componentContains(id));
-
-                        if (!touchesCurrent)
-                            startComponent();
-
-                        rememberVertex(ia);
-                        rememberVertex(ib);
-                        rememberVertex(id);
-
-                        emitVertex(d, componentBias);
-                        emitVertex(b, componentBias);
-                        emitVertex(a, componentBias);
                     }
+
+                    // Genuine one-triangle primitive such as the collapse arrow.
+                    i += 3;
+                    ++solidPrimitiveOrdinal;
                 }
 
                 tess->count = static_cast<int>(positions.size());
