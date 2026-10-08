@@ -90,14 +90,13 @@ public:
         material_ = mce::MaterialPtr::createMaterial(HashedString("ui_textured"));
         if (!material_) material_ = mce::MaterialPtr::createMaterial(HashedString("im_gui"));
 
-        // World panel uses a true 3D ScreenContext. sign_text is a textured
-        // world material suited to position/color/UV geometry and should depth
-        // test against blocks; keep conservative fallbacks for version drift.
-        worldMaterial_ = mce::MaterialPtr::createMaterial(HashedString("sign_text"));
-        if (!worldMaterial_)
-            worldMaterial_ = mce::MaterialPtr::createMaterial(HashedString("entity_alphatest"), true);
-        if (!worldMaterial_)
-            worldMaterial_ = material_;
+        // Keep the world panel's texture/color semantics identical to the
+        // already-correct 2D Tess backend. sign_text/entity_alphatest alpha-test
+        // the ImGui font atlas too aggressively and make glyphs look speckled.
+        worldMaterial_ = material_;
+        worldBackMaterial_ = mce::MaterialPtr::createMaterial(HashedString("ui_fill_color"));
+        if (!worldBackMaterial_)
+            worldBackMaterial_ = material_;
 
         initialized_ = material_ != nullptr;
         CrashLog::setStage(initialized_ ? "backend.initialize: complete" : "backend.initialize: material failed");
@@ -112,6 +111,7 @@ public:
         io.Fonts->SetTexID(static_cast<ImTextureID>(0));
         material_ = nullptr;
         worldMaterial_ = nullptr;
+        worldBackMaterial_ = nullptr;
         initialized_ = false;
     }
 
@@ -268,11 +268,8 @@ public:
                 totalElements += next.ElemCount;
             }
 
-            // Double-sided geometry makes the proof demo visible when walking
-            // around the back of the panel too.
-            const std::uint64_t doubled = totalElements * 2ull;
             const int reserve = static_cast<int>(
-                std::min<std::uint64_t>(doubled, static_cast<std::uint64_t>(INT_MAX)));
+                std::min<std::uint64_t>(totalElements, static_cast<std::uint64_t>(INT_MAX)));
 
             tess->begin(mce::PrimitiveMode::TriangleList, reserve);
             if (!tess->tessellating) {
@@ -309,15 +306,12 @@ public:
                     const ImDrawVert& b = vertices[indices[i + 1]];
                     const ImDrawVert& d = vertices[indices[i + 2]];
 
-                    // Front side.
+                    // Mapping ImGui's Y-down coordinates to panel Y-up flips
+                    // winding, so reverse the triangle once to keep the front
+                    // normal facing the camera that placed the panel.
                     emitVertex(d);
                     emitVertex(b);
                     emitVertex(a);
-
-                    // Back side.
-                    emitVertex(a);
-                    emitVertex(b);
-                    emitVertex(d);
                 }
             }
 
@@ -342,6 +336,76 @@ public:
             }
 
             commandIndex = runEnd;
+        }
+    }
+
+
+    void renderWorldBack(
+        ScreenContext* screen,
+        const Vec3& renderOrigin,
+        const Vec3& panelCenter,
+        const Vec3& panelRight,
+        const Vec3& panelUp,
+        float panelWidth,
+        float aspectRatio) {
+
+        if (!initialized_ || !screen || !worldBackMaterial_ ||
+            panelWidth <= 0.01f || aspectRatio <= 0.01f)
+            return;
+
+        Tessellator* tess = screen->getTessellator();
+        if (!tess || tess->tessellating || tess->overridden)
+            return;
+
+        const float halfW = panelWidth * 0.5f;
+        const float halfH = panelWidth * aspectRatio * 0.5f;
+
+        const auto point = [&](float x, float y) -> Vec3 {
+            const Vec3 world{
+                panelCenter.x + panelRight.x * x + panelUp.x * y,
+                panelCenter.y + panelRight.y * x + panelUp.y * y,
+                panelCenter.z + panelRight.z * x + panelUp.z * y};
+            return {
+                world.x - renderOrigin.x,
+                world.y - renderOrigin.y,
+                world.z - renderOrigin.z};
+        };
+
+        const Vec3 tl = point(-halfW, +halfH);
+        const Vec3 tr = point(+halfW, +halfH);
+        const Vec3 br = point(+halfW, -halfH);
+        const Vec3 bl = point(-halfW, -halfH);
+
+        tess->begin(mce::PrimitiveMode::TriangleList, 6);
+        if (!tess->tessellating)
+            return;
+
+        tess->meshData.enableField(mce::VertexField::Color);
+        tess->isFormatFixed = true;
+
+        auto& positions = tess->meshData.positions;
+        auto& colors = tess->meshData.colors;
+        positions.reserve(6);
+        colors.reserve(6);
+
+        constexpr std::uint32_t backColor = 0xFF161616u;
+        const auto emit = [&](const Vec3& p) {
+            positions.push_back(p);
+            colors.push_back(backColor);
+        };
+
+        // Reverse of the front face so the rear side has a clean backing.
+        emit(tl); emit(tr); emit(br);
+        emit(tl); emit(br); emit(bl);
+        tess->count = 6;
+
+        mce::Mesh mesh{};
+        if (tess->endTransient(mesh)) {
+            mesh.renderMesh(
+                screen->toMeshContext(),
+                worldBackMaterial_,
+                fontTexture_);
+            tess->reclaimTransient(mesh);
         }
     }
 
@@ -431,6 +495,7 @@ private:
     bool initialized_{};
     mce::MaterialPtr* material_{};
     mce::MaterialPtr* worldMaterial_{};
+    mce::MaterialPtr* worldBackMaterial_{};
     std::shared_ptr<mce::BedrockTextureData> fontTextureData_{};
     mce::ClientTexture fontTexture_{};
 };
