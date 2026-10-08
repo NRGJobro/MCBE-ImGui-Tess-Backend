@@ -81,6 +81,16 @@ public:
     }
 };
 
+// These are engine-facing STL ABI checks. Minecraft/Phase 26.52 is built against
+// the VS 2022-compatible MSVC STL layout. A newer incompatible STL makes
+// ResourceLocation/HashedString larger and crashes engine calls that take them.
+static_assert(sizeof(std::string) == 0x20,
+    "Incompatible MSVC STL ABI: build with Visual Studio 2022/v143 (Phase toolchain).");
+static_assert(sizeof(HashedString) == 0x30,
+    "HashedString ABI mismatch.");
+static_assert(sizeof(ResourceLocation) == 0x38,
+    "ResourceLocation ABI mismatch: expected MCBE 26.52 size 0x38.");
+
 namespace mcbe::signatures {
 inline std::uintptr_t renderContext() {
     static const auto value = memory::resolveCall(memory::scan(
