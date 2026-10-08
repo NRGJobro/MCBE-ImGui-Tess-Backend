@@ -168,8 +168,22 @@ inline std::uintptr_t windowProcCallback() {
         "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 89 D6 4C 8B 3D");
     return value;
 }
+inline std::uintptr_t mouseRefresh() {
+    // Phase 26.52: GameControllerHandler_GameCore::refresh.
+    static const auto value = memory::scan(
+        "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 44 0F 29 BD ? ? ? ? 44 0F 29 B5 ? ? ? ? 44 0F 29 AD ? ? ? ? 44 0F 29 A5 ? ? ? ? 44 0F 29 9D ? ? ? ? 44 0F 29 95 ? ? ? ? 44 0F 29 8D ? ? ? ? 44 0F 29 85 ? ? ? ? 0F 29 BD ? ? ? ? 0F 29 B5 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 48 89 CE 8B 05");
+    return value;
+}
+inline std::uintptr_t mouseDevice() {
+    // Phase 26.52: MouseDevice::instance. The RIP-relative target is the live
+    // MouseDevice storage itself, matching Phase's current SDK accessor.
+    static const auto value = memory::resolveRip(memory::scan(
+        "89 15 ? ? ? ? C7 47"), 2);
+    return value;
+}
 inline bool requiredReady() {
-    return renderContext() && meshRender() && materialCommon() && textureUpload() && imageResourceVtable();
+    return renderContext() && meshRender() && materialCommon() &&
+           textureUpload() && imageResourceVtable();
 }
 } // namespace mcbe::signatures
 
