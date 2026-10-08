@@ -1,10 +1,8 @@
 build/
+out/
 .vs/
 .idea/
 *.user
 *.suo
-*.obj
 *.pdb
-*.dll
-*.lib
-*.exp
+*.ilk
