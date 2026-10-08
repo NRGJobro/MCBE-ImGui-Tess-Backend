@@ -139,8 +139,8 @@ std::int64_t __fastcall levelRendererDetour(
         !renderer || !screen || !g_renderer.initialized())
         return result;
 
-    const auto panel = g_worldPanel.consumeTransform();
-    if (!panel.valid)
+    const auto panels = g_worldPanel.snapshotPanels();
+    if (panels.empty())
         return result;
 
     ImGuiWindow* source = mcbe::WorldPanelDemo::sourceWindow();
@@ -148,42 +148,49 @@ std::int64_t __fastcall levelRendererDetour(
         return result;
 
     const Vec3 renderOrigin = renderer->origin();
-    const Vec3 normal{
-        panel.right.y * panel.up.z - panel.right.z * panel.up.y,
-        panel.right.z * panel.up.x - panel.right.x * panel.up.z,
-        panel.right.x * panel.up.y - panel.right.y * panel.up.x};
-    const Vec3 toCamera{
-        renderOrigin.x - panel.center.x,
-        renderOrigin.y - panel.center.y,
-        renderOrigin.z - panel.center.z};
-    const float facing =
-        normal.x * toCamera.x +
-        normal.y * toCamera.y +
-        normal.z * toCamera.z;
+    const float aspect =
+        source->Size.x > 1.f ? source->Size.y / source->Size.x : 0.55f;
 
     CrashLog::setStage("worldPanel: Tessellator submit");
-    if (facing >= 0.f) {
-        g_renderer.renderWorldWindow(
-            source->DrawList,
-            source->Pos,
-            source->Size,
-            screen,
-            renderOrigin,
-            panel.center,
-            panel.right,
-            panel.up,
-            panel.width);
-    } else {
-        const float aspect =
-            source->Size.x > 1.f ? source->Size.y / source->Size.x : 0.55f;
-        g_renderer.renderWorldBack(
-            screen,
-            renderOrigin,
-            panel.center,
-            panel.right,
-            panel.up,
-            panel.width,
-            aspect);
+
+    for (const auto& panel : panels) {
+        if (!panel.valid)
+            continue;
+
+        const Vec3 normal{
+            panel.right.y * panel.up.z - panel.right.z * panel.up.y,
+            panel.right.z * panel.up.x - panel.right.x * panel.up.z,
+            panel.right.x * panel.up.y - panel.right.y * panel.up.x};
+        const Vec3 toCamera{
+            renderOrigin.x - panel.center.x,
+            renderOrigin.y - panel.center.y,
+            renderOrigin.z - panel.center.z};
+        const float facing =
+            normal.x * toCamera.x +
+            normal.y * toCamera.y +
+            normal.z * toCamera.z;
+
+        if (facing >= 0.f) {
+            g_renderer.renderWorldWindow(
+                source->DrawList,
+                source->Pos,
+                source->Size,
+                screen,
+                renderOrigin,
+                panel.center,
+                panel.right,
+                panel.up,
+                panel.width);
+        } else {
+            g_renderer.renderWorldBack(
+                screen,
+                renderOrigin,
+                panel.center,
+                panel.right,
+                panel.up,
+                panel.width,
+                aspect);
+        }
     }
 
     return result;
@@ -321,7 +328,9 @@ void drawTestWindow() {
         ImGui::Spacing();
         ImGui::TextUnformatted("Input source: Minecraft MouseDevice");
         ImGui::TextUnformatted("Drag/resize this window to verify native input.");
-        ImGui::TextUnformatted("F6: place/remove 3D world panel");
+        ImGui::Text("World panels: %zu", g_worldPanel.count());
+        ImGui::TextUnformatted("F6: place another 3D world panel");
+        ImGui::TextUnformatted("F7: remove newest world panel");
         ImGui::TextUnformatted("INSERT: show/hide 2D copy   END: uninject");
         ImGui::Spacing();
 
@@ -478,8 +487,19 @@ DWORD WINAPI startup(void* module) {
     bool lastInsert = false;
     while ((GetAsyncKeyState(VK_END) & 1) == 0) {
         if (GetAsyncKeyState(VK_F6) & 1) {
-            g_worldPanel.toggleRequested();
-            CrashLog::append("F6: toggled world panel request.\r\n");
+            const bool placed = g_worldPanel.placePanel();
+            CrashLog::append(
+                "F6: place panel %s; total=%zu.\r\n",
+                placed ? "OK" : "FAILED(no camera)",
+                g_worldPanel.count());
+        }
+
+        if (GetAsyncKeyState(VK_F7) & 1) {
+            const bool removed = g_worldPanel.removeLastPanel();
+            CrashLog::append(
+                "F7: remove newest panel %s; total=%zu.\r\n",
+                removed ? "OK" : "IGNORED(empty)",
+                g_worldPanel.count());
         }
 
         const bool insert = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
