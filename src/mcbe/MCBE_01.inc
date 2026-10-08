@@ -15,6 +15,14 @@
 #include <variant>
 #include <vector>
 
+#if defined(_DEBUG)
+#error "MCBE engine ABI mismatch: do not inject a Debug STL build. Use Release or RelWithDebInfo."
+#endif
+
+#if defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
+#error "MCBE engine ABI mismatch: _ITERATOR_DEBUG_LEVEL must be 0."
+#endif
+
 struct Vec2 {
     float x{}, y{};
 };
