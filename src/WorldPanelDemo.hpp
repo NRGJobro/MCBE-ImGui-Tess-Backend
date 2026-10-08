@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cmath>
 #include <mutex>
+#include <vector>
 
 namespace mcbe {
 
@@ -56,34 +57,48 @@ public:
         camera_ = next;
     }
 
-    void toggleRequested() {
+    bool placePanel() {
         std::scoped_lock lock(mutex_);
-        if (panel_.valid) {
-            panel_ = {};
-            placeRequested_ = false;
-        } else {
-            placeRequested_ = true;
-        }
+        if (!camera_.valid)
+            return false;
+
+        Transform panel{};
+        panel.center = add(camera_.origin, mul(camera_.forward, 3.0f));
+        panel.right = camera_.right;
+        panel.up = camera_.up;
+        panel.width = 2.8f;
+        panel.valid = true;
+        panels_.push_back(panel);
+        return true;
+    }
+
+    bool removeLastPanel() {
+        std::scoped_lock lock(mutex_);
+        if (panels_.empty())
+            return false;
+
+        panels_.pop_back();
+        return true;
+    }
+
+    void clearPanels() {
+        std::scoped_lock lock(mutex_);
+        panels_.clear();
     }
 
     bool active() const {
         std::scoped_lock lock(mutex_);
-        return panel_.valid || placeRequested_;
+        return !panels_.empty();
     }
 
-    Transform consumeTransform() {
+    std::size_t count() const {
         std::scoped_lock lock(mutex_);
+        return panels_.size();
+    }
 
-        if (placeRequested_ && camera_.valid) {
-            panel_.center = add(camera_.origin, mul(camera_.forward, 3.0f));
-            panel_.right = camera_.right;
-            panel_.up = camera_.up;
-            panel_.width = 2.8f;
-            panel_.valid = true;
-            placeRequested_ = false;
-        }
-
-        return panel_;
+    std::vector<Transform> snapshotPanels() const {
+        std::scoped_lock lock(mutex_);
+        return panels_;
     }
 
     static ImGuiWindow* sourceWindow() {
@@ -141,8 +156,8 @@ private:
     }
 
     static Vec3 rotate(const world::Quaternion& q, const Vec3& v) {
-        // GLM's default quat layout is w,x,y,z. Phase 26.52 stores
-        // CameraComponent::quat at 0x30 and uses q * vec3(0,0,-1).
+        // Phase 26.52 stores CameraComponent::quat at 0x30 and uses
+        // GLM's default x,y,z,w memory layout.
         const Vec3 qv{q.x, q.y, q.z};
         const Vec3 t = mul(cross(qv, v), 2.f);
         return add(v, add(mul(t, q.w), cross(qv, t)));
@@ -150,8 +165,7 @@ private:
 
     mutable std::mutex mutex_;
     Snapshot camera_{};
-    Transform panel_{};
-    bool placeRequested_{};
+    std::vector<Transform> panels_{};
 };
 
 } // namespace mcbe
