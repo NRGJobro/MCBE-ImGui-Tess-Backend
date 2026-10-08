@@ -18,6 +18,22 @@ public:
     VertexFormat unknownFormat;
     std::vector<std::uint8_t> rawData;
 
+    void renderMesh(MeshContext* context, MaterialPtr* material) const {
+        if (!context || !material)
+            return;
+
+        StaticVector<TextureBinding, 8> textures;
+        renderMeshFull(
+            context,
+            material,
+            textures,
+            0,
+            0,
+            UIMeshOffscreenCaptureDescription{},
+            nullptr,
+            {});
+    }
+
     void renderMesh(MeshContext* context, MaterialPtr* material, const ClientTexture& texture) const {
         if (!context || !material)
             return;
