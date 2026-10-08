@@ -79,7 +79,7 @@ public:
 class RenderMaterialGroup {};
 
 class MaterialPtr {
-    char pad_[0x138]{};
+    [[maybe_unused]] char pad_[0x138]{};
 public:
     static MaterialPtr* createMaterial(const HashedString& name, bool switchable = false) {
         auto* group = reinterpret_cast<RenderMaterialGroup*>(
