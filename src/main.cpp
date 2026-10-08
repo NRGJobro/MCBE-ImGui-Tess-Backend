@@ -4,6 +4,7 @@
 #include <imgui.h>
 
 #include "MCBE.hpp"
+#include "CrashLogger.hpp"
 #include "ImGuiTessBackend.hpp"
 
 #include <algorithm>
@@ -51,8 +52,13 @@ void drawTestWindow() {
 void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     ActiveCall active;
 
-    // Let vanilla finish this UI layer first, then place our native tessellator mesh over it.
+    // Let vanilla finish this UI layer first. Crash logging begins only around our code
+    // so unrelated vanilla exceptions do not get mislabeled as backend failures.
     if (g_original) g_original(view, ctx);
+
+    CrashLog::RenderScope crashScope;
+    CrashLog::setStage("renderDetour: enter");
+    CrashLog::setPointers(ctx);
 
     if (!g_running.load(std::memory_order_acquire) || !view || !ctx)
         return;
@@ -66,18 +72,24 @@ void __fastcall renderDetour(ScreenView* view, MinecraftUIRenderContext* ctx) {
     if (view->screenScale.x <= 1.f || view->screenScale.y <= 1.f)
         return;
 
+    CrashLog::setStage("renderDetour: initialize backend");
     if (!g_renderer.initialized() && !g_renderer.initialize(ctx))
         return;
 
+    CrashLog::setStage("renderDetour: prepare ImGui frame");
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(view->screenScale.x, view->screenScale.y);
     io.DisplayFramebufferScale = ImVec2(1.f, 1.f);
     io.DeltaTime = std::clamp(view->deltaTime > 0.f ? view->deltaTime : (1.f / 60.f), 1.f / 1000.f, 0.1f);
 
+    CrashLog::setStage("renderDetour: ImGui::NewFrame");
     ImGui::NewFrame();
     drawTestWindow();
     ImGui::Render();
+
+    CrashLog::setStage("renderDetour: backend render");
     g_renderer.render(ImGui::GetDrawData(), ctx);
+    CrashLog::setStage("renderDetour: complete");
 }
 
 void openConsole() {
@@ -90,9 +102,18 @@ void openConsole() {
 
 DWORD WINAPI startup(void* module) {
     g_module = static_cast<HMODULE>(module);
+    CrashLog::install(g_module);
     openConsole();
     std::puts("[MCBE-ImGui-Tess] loading standalone backend...");
+    std::wprintf(L"[MCBE-ImGui-Tess] diagnostics: %ls\\n", CrashLog::directory());
 
+    CrashLog::append("RenderContext: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::renderContext()));
+    CrashLog::append("Mesh::_renderMesh: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::meshRender()));
+    CrashLog::append("RenderMaterialGroup::common: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::materialCommon()));
+    CrashLog::append("TextureGroup::uploadTexture: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::textureUpload()));
+    CrashLog::append("cg::ImageResource::vtable: 0x%llX\\r\\n", static_cast<unsigned long long>(mcbe::signatures::imageResourceVtable()));
+
+    CrashLog::setStage("startup: IMGUI_CHECKVERSION");
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
@@ -133,6 +154,8 @@ DWORD WINAPI startup(void* module) {
     g_renderer.shutdown();
     if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
     MH_Uninitialize();
+    CrashLog::append("Clean unload completed.\\r\\n");
+    CrashLog::uninstall();
 
     std::puts("[MCBE-ImGui-Tess] unloaded.");
     Sleep(100);
