@@ -62,6 +62,13 @@ struct TextureContainer {
           description(image.imageDescription), valid(true) {}
 };
 
+static_assert(sizeof(cg::ImageBuffer) == 0x30,
+    "ImageBuffer ABI mismatch for MCBE 26.52.");
+static_assert(sizeof(TextureDescription) == 0x40,
+    "TextureDescription ABI mismatch for MCBE 26.52.");
+static_assert(sizeof(TextureContainer) == 0x58,
+    "TextureContainer ABI mismatch for MCBE 26.52.");
+
 class BedrockTextureData {
 public:
     ClientTexture clientTexture;
