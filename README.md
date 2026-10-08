@@ -73,3 +73,23 @@ When Bedrock updates, these are the only version-sensitive pieces expected to ne
 ## Notes
 
 This project intentionally contains only a rendering test. It has no gameplay modules, networking modifications, key/auth system, or dependency on Phase's module framework.
+
+
+## Crash diagnostics
+
+The DLL installs a read-only vectored exception logger around its own render/backend work. It does **not** swallow access violations; Minecraft's normal exception handling still runs after the log is written.
+
+Logs are stored in:
+
+```text
+%TEMP%\MCBE-ImGui-Tess\
+```
+
+Files:
+
+- `session.log` — resolved 26.52 signature addresses and normal startup/unload information.
+- `crash-last.log` — the most recent exception, backend stage, MCBE context/Tessellator pointers, registers, and stack addresses.
+- `crash-last.dmp` — a small Windows minidump for crashes that need deeper inspection.
+
+For a crash report, send `crash-last.log` and `session.log` first. The `Stage:` line is specifically updated around font upload, material creation, Tessellator begin/end, clipping, vertex emission, and `mce::Mesh::_renderMesh`.
+
