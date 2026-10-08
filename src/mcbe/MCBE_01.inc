@@ -162,6 +162,12 @@ inline std::uintptr_t imageResourceVtable() {
         "48 8D 0D ? ? ? ? 48 89 4B ? 48 89 D9"), 3);
     return value;
 }
+inline std::uintptr_t windowProcCallback() {
+    // Phase 26.52: MainWindow::_windowProcCallback / WindowProcCallbackHook::keymapSig.
+    static const auto value = memory::scan(
+        "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC ? ? ? ? 48 8D AC 24 ? ? ? ? 48 C7 85 ? ? ? ? ? ? ? ? 89 D6 4C 8B 3D");
+    return value;
+}
 inline bool requiredReady() {
     return renderContext() && meshRender() && materialCommon() && textureUpload() && imageResourceVtable();
 }
