@@ -318,6 +318,12 @@ public:
                    nearUv(d.uv, fontWhiteUv_);
         };
 
+        // ImGui is a painter's-order renderer. A normal GPU UI pass doesn't need
+        // depth separation, but our world-space copy does. Track solid triangles
+        // across the entire draw list so later primitives sit microscopically
+        // closer to the camera than earlier ones.
+        std::uint32_t solidTriangleOrdinal = 0;
+
         for (int commandIndex = 0; commandIndex < list->CmdBuffer.Size; ++commandIndex) {
             const ImDrawCmd& cmd = list->CmdBuffer[commandIndex];
             if (cmd.UserCallback || cmd.ElemCount < 3)
@@ -372,13 +378,17 @@ public:
                 colors.reserve(colors.size() + matchedElements);
                 uvs.reserve(uvs.size() + matchedElements);
 
-                // Both passes are depth-tested. Put glyphs just in front of the
-                // panel surface so they don't z-fight the coplanar fill quads.
-                // 0.004 blocks is visually negligible but comfortably above the
-                // depth precision noise that was making glyph fragments flicker.
-                const float frontBias = solidPass ? 0.0f : 0.004f;
+                // Both passes stay world-depth-tested. Text gets its own stable
+                // foreground layer. Solid UI geometry follows ImGui painter order:
+                // each normal two-triangle quad gets a microscopic extra offset,
+                // so title bars, separators, arrows, borders, etc. cannot z-fight
+                // the window/background triangles underneath them.
+                constexpr float kSolidBaseBias = 0.0005f;
+                constexpr float kSolidLayerStep = 0.00002f;
+                constexpr std::uint32_t kMaxSolidLayers = 384;
+                constexpr float kTextBias = 0.0100f;
 
-                const auto emitVertex = [&](const ImDrawVert& vertex) {
+                const auto emitVertex = [&](const ImDrawVert& vertex, float frontBias) {
                     positions.push_back(toWorldLocal(vertex, frontBias));
                     colors.push_back(vertex.col);
                     uvs.push_back({vertex.uv.x, vertex.uv.y});
@@ -389,13 +399,29 @@ public:
                     const ImDrawVert& b = vertices[indices[i + 1]];
                     const ImDrawVert& d = vertices[indices[i + 2]];
 
-                    if (isSolidTriangle(a, b, d) != solidPass)
+                    const bool isSolid = isSolidTriangle(a, b, d);
+                    if (isSolid != solidPass)
                         continue;
 
+                    float frontBias = kTextBias;
+                    if (solidPass) {
+                        // Most ImGui solid primitives are emitted as two triangles
+                        // per quad. Keep each pair coplanar, then advance the next
+                        // primitive slightly toward the viewer.
+                        const std::uint32_t layer =
+                            std::min<std::uint32_t>(
+                                solidTriangleOrdinal / 2u,
+                                kMaxSolidLayers);
+                        frontBias =
+                            kSolidBaseBias +
+                            static_cast<float>(layer) * kSolidLayerStep;
+                        ++solidTriangleOrdinal;
+                    }
+
                     // Y-down ImGui -> Y-up world basis flips winding once.
-                    emitVertex(d);
-                    emitVertex(b);
-                    emitVertex(a);
+                    emitVertex(d, frontBias);
+                    emitVertex(b, frontBias);
+                    emitVertex(a, frontBias);
                 }
 
                 tess->count = static_cast<int>(positions.size());
