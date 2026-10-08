@@ -7,10 +7,12 @@
 namespace mcbe::world {
 
 struct Quaternion {
-    float w{1.f};
+    // GLM default in-memory layout is x,y,z,w unless
+    // GLM_FORCE_QUAT_DATA_WXYZ is defined. Phase does not define it.
     float x{};
     float y{};
     float z{};
+    float w{1.f};
 };
 static_assert(sizeof(Quaternion) == 0x10);
 
