@@ -28,6 +28,7 @@ public:
         int width = 0, height = 0, bytesPerPixel = 0;
         io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height, &bytesPerPixel);
         if (!pixels || width <= 0 || height <= 0 || bytesPerPixel != 4) return false;
+        fontWhiteUv_ = io.Fonts->TexUvWhitePixel;
 
         mce::Image image{};
         image.imageFormat = mce::ImageFormat::RGBA8Unorm;
@@ -90,40 +91,45 @@ public:
         material_ = mce::MaterialPtr::createMaterial(HashedString("ui_textured"));
         if (!material_) material_ = mce::MaterialPtr::createMaterial(HashedString("im_gui"));
 
-        // World-space ImGui must use a depth-tested world material. Prefer an
-        // alpha-blended entity shader so the RGBA ImGui font atlas stays smooth,
-        // then fall back through other known depth-tested textured materials.
-        worldMaterialName_ = "entity_alphablend";
-        worldMaterial_ = mce::MaterialPtr::createMaterial(
+        // Split world rendering by primitive type:
+        //  - solid ImGui geometry uses a depth-tested alpha-blended entity material
+        //  - glyph triangles use a world text material with a text-friendly sampler
+        worldFillMaterialName_ = "entity_alphablend";
+        worldFillMaterial_ = mce::MaterialPtr::createMaterial(
             HashedString("entity_alphablend"), true);
 
-        if (!worldMaterial_) {
-            worldMaterialName_ = "name_text_depth_tested";
-            worldMaterial_ = mce::MaterialPtr::createMaterial(
-                HashedString("name_text_depth_tested"));
-        }
-
-        if (!worldMaterial_) {
-            worldMaterialName_ = "sign_text";
-            worldMaterial_ = mce::MaterialPtr::createMaterial(
-                HashedString("sign_text"));
-        }
-
-        if (!worldMaterial_) {
-            worldMaterialName_ = "entity_alphatest";
-            worldMaterial_ = mce::MaterialPtr::createMaterial(
+        if (!worldFillMaterial_) {
+            worldFillMaterialName_ = "entity_alphatest";
+            worldFillMaterial_ = mce::MaterialPtr::createMaterial(
                 HashedString("entity_alphatest"), true);
         }
 
-        if (!worldMaterial_) {
-            worldMaterialName_ = "ui_textured (fallback; no depth guarantee)";
-            worldMaterial_ = material_;
+        if (!worldFillMaterial_) {
+            worldFillMaterialName_ = "ui_textured (fallback; no depth guarantee)";
+            worldFillMaterial_ = material_;
+        }
+
+        worldTextMaterialName_ = "name_text_depth_tested";
+        worldTextMaterial_ = mce::MaterialPtr::createMaterial(
+            HashedString("name_text_depth_tested"));
+
+        if (!worldTextMaterial_) {
+            worldTextMaterialName_ = "sign_text";
+            worldTextMaterial_ = mce::MaterialPtr::createMaterial(
+                HashedString("sign_text"));
+        }
+
+        if (!worldTextMaterial_) {
+            worldTextMaterialName_ = worldFillMaterialName_;
+            worldTextMaterial_ = worldFillMaterial_;
         }
 
         CrashLog::append(
-            "Backend init: world material=%s ptr=%p\r\n",
-            worldMaterialName_,
-            worldMaterial_);
+            "Backend init: world fill=%s ptr=%p, world text=%s ptr=%p\r\n",
+            worldFillMaterialName_,
+            worldFillMaterial_,
+            worldTextMaterialName_,
+            worldTextMaterial_);
 
         initialized_ = material_ != nullptr;
         CrashLog::setStage(initialized_ ? "backend.initialize: complete" : "backend.initialize: material failed");
@@ -137,13 +143,16 @@ public:
         io.BackendRendererName = nullptr;
         io.Fonts->SetTexID(static_cast<ImTextureID>(0));
         material_ = nullptr;
-        worldMaterial_ = nullptr;
-        worldMaterialName_ = "none";
+        worldFillMaterial_ = nullptr;
+        worldTextMaterial_ = nullptr;
+        worldFillMaterialName_ = "none";
+        worldTextMaterialName_ = "none";
         initialized_ = false;
     }
 
     bool initialized() const { return initialized_; }
-    const char* worldMaterialName() const { return worldMaterialName_; }
+    const char* worldFillMaterialName() const { return worldFillMaterialName_; }
+    const char* worldTextMaterialName() const { return worldTextMaterialName_; }
 
     void render(ImDrawData* drawData, MinecraftUIRenderContext* ctx) {
         CrashLog::setStage("backend.render: validate draw data");
@@ -247,7 +256,8 @@ public:
         float panelWidth) {
 
         CrashLog::setStage("backend.world: validate");
-        if (!initialized_ || !list || !screen || !worldMaterial_ ||
+        if (!initialized_ || !list || !screen ||
+            (!worldFillMaterial_ && !worldTextMaterial_) ||
             sourceSize.x <= 1.f || sourceSize.y <= 1.f ||
             panelWidth <= 0.01f || list->VtxBuffer.empty() || list->IdxBuffer.empty())
             return;
@@ -257,6 +267,7 @@ public:
             return;
 
         const float panelHeight = panelWidth * (sourceSize.y / sourceSize.x);
+
         const auto toWorldLocal = [&](const ImDrawVert& vertex) -> Vec3 {
             const float nx = ((vertex.pos.x - sourcePos.x) / sourceSize.x) - 0.5f;
             const float ny = 0.5f - ((vertex.pos.y - sourcePos.y) / sourceSize.y);
@@ -272,101 +283,118 @@ public:
                 world.z - renderOrigin.z};
         };
 
-        int commandIndex = 0;
-        while (commandIndex < list->CmdBuffer.Size) {
-            const ImDrawCmd& first = list->CmdBuffer[commandIndex];
-            if (first.UserCallback || first.ElemCount < 3) {
-                ++commandIndex;
+        const auto nearUv = [](const ImVec2& a, const ImVec2& b) {
+            constexpr float epsilon = 0.00001f;
+            return std::abs(a.x - b.x) <= epsilon &&
+                   std::abs(a.y - b.y) <= epsilon;
+        };
+
+        const auto isSolidTriangle = [&](const ImDrawVert& a,
+                                         const ImDrawVert& b,
+                                         const ImDrawVert& d) {
+            // ImGui solid primitives sample TexUvWhitePixel. Glyphs/images use
+            // varying atlas UVs, so this cleanly separates UI fill from text.
+            return nearUv(a.uv, fontWhiteUv_) &&
+                   nearUv(b.uv, fontWhiteUv_) &&
+                   nearUv(d.uv, fontWhiteUv_);
+        };
+
+        for (int commandIndex = 0; commandIndex < list->CmdBuffer.Size; ++commandIndex) {
+            const ImDrawCmd& cmd = list->CmdBuffer[commandIndex];
+            if (cmd.UserCallback || cmd.ElemCount < 3)
                 continue;
-            }
 
-            ImTextureID texture =
-                first.TextureId ? first.TextureId : toTextureId(&fontTexture_);
-
-            std::uint64_t totalElements = first.ElemCount;
-            int runEnd = commandIndex + 1;
-            for (; runEnd < list->CmdBuffer.Size; ++runEnd) {
-                const ImDrawCmd& next = list->CmdBuffer[runEnd];
-                if (next.UserCallback || next.ElemCount < 3)
-                    break;
-                const ImTextureID nextTexture =
-                    next.TextureId ? next.TextureId : toTextureId(&fontTexture_);
-                if (nextTexture != texture)
-                    break;
-                totalElements += next.ElemCount;
-            }
-
-            const int reserve = static_cast<int>(
-                std::min<std::uint64_t>(totalElements, static_cast<std::uint64_t>(INT_MAX)));
-
-            tess->begin(mce::PrimitiveMode::TriangleList, reserve);
-            if (!tess->tessellating) {
-                commandIndex = runEnd;
+            const ImTextureID texture =
+                cmd.TextureId ? cmd.TextureId : toTextureId(&fontTexture_);
+            const auto* clientTexture = fromTextureId(texture);
+            if (!clientTexture || !clientTexture->resourcePointerBlock)
+                clientTexture = &fontTexture_;
+            if (!clientTexture || !clientTexture->resourcePointerBlock)
                 continue;
-            }
 
-            tess->meshData.enableField(mce::VertexField::Color);
-            tess->meshData.enableField(mce::VertexField::UV0);
-            tess->isFormatFixed = true;
+            const ImDrawVert* vertices = list->VtxBuffer.Data + cmd.VtxOffset;
+            const ImDrawIdx* indices = list->IdxBuffer.Data + cmd.IdxOffset;
+            const unsigned usable = cmd.ElemCount - (cmd.ElemCount % 3u);
 
-            auto& positions = tess->meshData.positions;
-            auto& colors = tess->meshData.colors;
-            auto& uvs = tess->meshData.textureUVs[0];
+            const auto submitPass = [&](bool solidPass, mce::MaterialPtr* material) {
+                if (!material)
+                    return;
 
-            positions.reserve(positions.size() + static_cast<std::size_t>(reserve));
-            colors.reserve(colors.size() + static_cast<std::size_t>(reserve));
-            uvs.reserve(uvs.size() + static_cast<std::size_t>(reserve));
+                unsigned matchedElements = 0;
+                for (unsigned i = 0; i < usable; i += 3) {
+                    const ImDrawVert& a = vertices[indices[i + 0]];
+                    const ImDrawVert& b = vertices[indices[i + 1]];
+                    const ImDrawVert& d = vertices[indices[i + 2]];
+                    if (isSolidTriangle(a, b, d) == solidPass)
+                        matchedElements += 3;
+                }
 
-            const auto emitVertex = [&](const ImDrawVert& vertex) {
-                positions.push_back(toWorldLocal(vertex));
-                colors.push_back(vertex.col);
-                uvs.push_back({vertex.uv.x, vertex.uv.y});
-            };
+                if (!matchedElements)
+                    return;
 
-            for (int emit = commandIndex; emit < runEnd; ++emit) {
-                const ImDrawCmd& cmd = list->CmdBuffer[emit];
-                const ImDrawVert* vertices = list->VtxBuffer.Data + cmd.VtxOffset;
-                const ImDrawIdx* indices = list->IdxBuffer.Data + cmd.IdxOffset;
-                const unsigned usable = cmd.ElemCount - (cmd.ElemCount % 3u);
+                if (tess->tessellating || tess->overridden)
+                    return;
+
+                tess->begin(
+                    mce::PrimitiveMode::TriangleList,
+                    static_cast<int>(matchedElements));
+                if (!tess->tessellating)
+                    return;
+
+                tess->meshData.enableField(mce::VertexField::Color);
+                tess->meshData.enableField(mce::VertexField::UV0);
+                tess->isFormatFixed = true;
+
+                auto& positions = tess->meshData.positions;
+                auto& colors = tess->meshData.colors;
+                auto& uvs = tess->meshData.textureUVs[0];
+
+                positions.reserve(positions.size() + matchedElements);
+                colors.reserve(colors.size() + matchedElements);
+                uvs.reserve(uvs.size() + matchedElements);
+
+                const auto emitVertex = [&](const ImDrawVert& vertex) {
+                    positions.push_back(toWorldLocal(vertex));
+                    colors.push_back(vertex.col);
+                    uvs.push_back({vertex.uv.x, vertex.uv.y});
+                };
 
                 for (unsigned i = 0; i < usable; i += 3) {
                     const ImDrawVert& a = vertices[indices[i + 0]];
                     const ImDrawVert& b = vertices[indices[i + 1]];
                     const ImDrawVert& d = vertices[indices[i + 2]];
 
-                    // Mapping ImGui's Y-down coordinates to panel Y-up flips
-                    // winding, so reverse the triangle once to keep the front
-                    // normal facing the camera that placed the panel.
+                    if (isSolidTriangle(a, b, d) != solidPass)
+                        continue;
+
+                    // Y-down ImGui -> Y-up world basis flips winding once.
                     emitVertex(d);
                     emitVertex(b);
                     emitVertex(a);
                 }
-            }
 
-            tess->count = static_cast<int>(positions.size());
+                tess->count = static_cast<int>(positions.size());
 
-            const auto* clientTexture = fromTextureId(texture);
-            if (!clientTexture || !clientTexture->resourcePointerBlock)
-                clientTexture = &fontTexture_;
-
-            if (clientTexture && clientTexture->resourcePointerBlock) {
                 mce::Mesh mesh{};
                 if (tess->endTransient(mesh)) {
-                    CrashLog::setStage("backend.world: mce::Mesh::_renderMesh");
+                    CrashLog::setStage(
+                        solidPass
+                            ? "backend.world: submit fill"
+                            : "backend.world: submit text");
                     mesh.renderMesh(
                         screen->toMeshContext(),
-                        worldMaterial_,
+                        material,
                         *clientTexture);
                     tess->reclaimTransient(mesh);
                 }
-            } else {
-                tess->clear();
-            }
+            };
 
-            commandIndex = runEnd;
+            // Submit fills first, then text on top. Both materials are world-space
+            // depth-tested; only their sampling/blending behavior differs.
+            submitPass(true, worldFillMaterial_);
+            submitPass(false, worldTextMaterial_);
         }
     }
-
 
 private:
     static ImTextureID toTextureId(const mce::ClientTexture* texture) {
@@ -453,8 +481,11 @@ private:
 
     bool initialized_{};
     mce::MaterialPtr* material_{};
-    mce::MaterialPtr* worldMaterial_{};
-    const char* worldMaterialName_{"none"};
+    mce::MaterialPtr* worldFillMaterial_{};
+    mce::MaterialPtr* worldTextMaterial_{};
+    const char* worldFillMaterialName_{"none"};
+    const char* worldTextMaterialName_{"none"};
+    ImVec2 fontWhiteUv_{};
     std::shared_ptr<mce::BedrockTextureData> fontTextureData_{};
     mce::ClientTexture fontTexture_{};
 };
