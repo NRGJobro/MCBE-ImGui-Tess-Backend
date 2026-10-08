@@ -21,17 +21,24 @@ The renderer batches adjacent ImGui commands that share a texture and clipping r
 
 ## Build
 
+### Toolchain ABI
+
+Do **not** build this engine-facing DLL with the VS 2026 STL. MCBE 26.52/Phase uses the VS 2022-compatible STL ABI, and engine-facing types such as `ResourceLocation` contain `std::string`. The project contains compile-time size checks for `std::string`, `ResourceLocation`, `ImageBuffer`, `TextureDescription`, and `TextureContainer` so an incompatible toolchain fails at build time instead of crashing during `TextureGroup::uploadTexture`.
+
+The CI intentionally matches Phase's current shipping build: **Visual Studio 17 2022 + ClangCL**.
+
+
 Requirements:
 
 - Windows 10/11 x64
-- Visual Studio 2022 with **Desktop development with C++**
+- Visual Studio 2022 with **Desktop development with C++** and the **Clang tools for Windows** component
 - CMake 3.24+
 - Internet access on the first configure so CMake can download pinned Dear ImGui + MinHook
 
 From Developer PowerShell:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T ClangCL
 cmake --build build --config Release
 ```
 
