@@ -94,9 +94,15 @@ public:
         // Split world rendering by primitive type:
         //  - solid ImGui geometry uses a depth-tested alpha-blended entity material
         //  - glyph triangles use a world text material with a text-friendly sampler
-        worldFillMaterialName_ = "entity_alphablend";
+        worldFillMaterialName_ = "selection_overlay";
         worldFillMaterial_ = mce::MaterialPtr::createMaterial(
-            HashedString("entity_alphablend"), true);
+            HashedString("selection_overlay"));
+
+        if (!worldFillMaterial_) {
+            worldFillMaterialName_ = "entity_alphablend";
+            worldFillMaterial_ = mce::MaterialPtr::createMaterial(
+                HashedString("entity_alphablend"), true);
+        }
 
         if (!worldFillMaterial_) {
             worldFillMaterialName_ = "entity_alphatest";
@@ -105,7 +111,7 @@ public:
         }
 
         if (!worldFillMaterial_) {
-            worldFillMaterialName_ = "ui_textured (fallback; no depth guarantee)";
+            worldFillMaterialName_ = "ui_textured (last fallback)";
             worldFillMaterial_ = material_;
         }
 
@@ -367,7 +373,8 @@ public:
                     return;
 
                 tess->meshData.enableField(mce::VertexField::Color);
-                tess->meshData.enableField(mce::VertexField::UV0);
+                if (!solidPass)
+                    tess->meshData.enableField(mce::VertexField::UV0);
                 tess->isFormatFixed = true;
 
                 auto& positions = tess->meshData.positions;
@@ -376,7 +383,8 @@ public:
 
                 positions.reserve(positions.size() + matchedElements);
                 colors.reserve(colors.size() + matchedElements);
-                uvs.reserve(uvs.size() + matchedElements);
+                if (!solidPass)
+                    uvs.reserve(uvs.size() + matchedElements);
 
                 // Both passes stay world-depth-tested. Text gets its own stable
                 // foreground layer. Solid UI geometry follows ImGui painter order,
@@ -390,7 +398,8 @@ public:
                 const auto emitVertex = [&](const ImDrawVert& vertex, float frontBias) {
                     positions.push_back(toWorldLocal(vertex, frontBias));
                     colors.push_back(vertex.col);
-                    uvs.push_back({vertex.uv.x, vertex.uv.y});
+                    if (!solidPass)
+                        uvs.push_back({vertex.uv.x, vertex.uv.y});
                 };
 
                 const auto sameVertexIndex = [](ImDrawIdx lhs, ImDrawIdx rhs) {
@@ -489,7 +498,7 @@ public:
                     mesh.renderMesh(
                         screen->toMeshContext(),
                         material,
-                        *clientTexture);
+                        solidPass ? fontTexture_ : *clientTexture);
                     tess->reclaimTransient(mesh);
                 }
             };
