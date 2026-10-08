@@ -109,7 +109,8 @@ For a crash report, send `crash-last.log` and `session.log` first. The `Stage:` 
 
 Press **F6** while in-game to place a copy of the ImGui test window three blocks in front of the current rendered camera. The panel is frozen in world coordinates and is submitted through the current 3D `LevelRenderer` `ScreenContext` and Minecraft `Tessellator`.
 
-- **F6** — place/remove the world-space panel
+- **F6** — place another world-space panel at the current camera pose
+- **F7** — remove the most recently placed world-space panel
 - **INSERT** — show/hide the normal 2D Tessellator copy
 - **END** — uninject
 
