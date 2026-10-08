@@ -114,6 +114,9 @@ public:
     float getScale() const {
         return *reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(this) + 0x5C);
     }
+    Vec2 getMousePos() const {
+        return *reinterpret_cast<const Vec2*>(reinterpret_cast<std::uintptr_t>(this) + 0x7A);
+    }
 };
 
 class ClientInstance {
