@@ -94,9 +94,9 @@ public:
         // Split world rendering by primitive type:
         //  - solid ImGui geometry uses a depth-tested alpha-blended entity material
         //  - glyph triangles use a world text material with a text-friendly sampler
-        worldFillMaterialName_ = "selection_overlay";
+        worldFillMaterialName_ = "sign_text";
         worldFillMaterial_ = mce::MaterialPtr::createMaterial(
-            HashedString("selection_overlay"));
+            HashedString("sign_text"));
 
         if (!worldFillMaterial_) {
             worldFillMaterialName_ = "entity_alphablend";
@@ -373,8 +373,7 @@ public:
                     return;
 
                 tess->meshData.enableField(mce::VertexField::Color);
-                if (!solidPass)
-                    tess->meshData.enableField(mce::VertexField::UV0);
+                tess->meshData.enableField(mce::VertexField::UV0);
                 tess->isFormatFixed = true;
 
                 auto& positions = tess->meshData.positions;
@@ -383,8 +382,7 @@ public:
 
                 positions.reserve(positions.size() + matchedElements);
                 colors.reserve(colors.size() + matchedElements);
-                if (!solidPass)
-                    uvs.reserve(uvs.size() + matchedElements);
+                uvs.reserve(uvs.size() + matchedElements);
 
                 // Both passes stay world-depth-tested. Text gets its own stable
                 // foreground layer. Solid UI geometry follows ImGui painter order,
@@ -398,8 +396,7 @@ public:
                 const auto emitVertex = [&](const ImDrawVert& vertex, float frontBias) {
                     positions.push_back(toWorldLocal(vertex, frontBias));
                     colors.push_back(vertex.col);
-                    if (!solidPass)
-                        uvs.push_back({vertex.uv.x, vertex.uv.y});
+                    uvs.push_back({vertex.uv.x, vertex.uv.y});
                 };
 
                 const auto sameVertexIndex = [](ImDrawIdx lhs, ImDrawIdx rhs) {
@@ -495,18 +492,10 @@ public:
                         solidPass
                             ? "backend.world: submit fill"
                             : "backend.world: submit text");
-                    if (solidPass) {
-                        // Match Phase's untextured MeshHelpers overload exactly:
-                        // selection_overlay receives zero texture bindings.
-                        mesh.renderMesh(
-                            screen->toMeshContext(),
-                            material);
-                    } else {
-                        mesh.renderMesh(
-                            screen->toMeshContext(),
-                            material,
-                            *clientTexture);
-                    }
+                    mesh.renderMesh(
+                        screen->toMeshContext(),
+                        material,
+                        *clientTexture);
                     tess->reclaimTransient(mesh);
                 }
             };
