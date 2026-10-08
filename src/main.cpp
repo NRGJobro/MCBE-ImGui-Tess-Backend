@@ -164,7 +164,7 @@ bool initializePlatform(HWND hwnd) {
     g_platformReady.store(true, std::memory_order_release);
 
     wchar_t title[256]{};
-    GetWindowTextW(hwnd, title, static_cast<int>(std::size(title)));
+    GetWindowTextW(hwnd, title, 256);
     RECT client{};
     GetClientRect(hwnd, &client);
     CrashLog::append(
