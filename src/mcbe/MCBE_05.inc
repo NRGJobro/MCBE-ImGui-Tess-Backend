@@ -81,10 +81,30 @@ public:
     }
 };
 
+class GuiData {
+public:
+    Vec2 getMcResolution() const {
+        return *reinterpret_cast<const Vec2*>(reinterpret_cast<std::uintptr_t>(this) + 0x40);
+    }
+    Vec2 getResolution() const {
+        return *reinterpret_cast<const Vec2*>(reinterpret_cast<std::uintptr_t>(this) + 0x50);
+    }
+    float getScale() const {
+        return *reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(this) + 0x5C);
+    }
+};
+
+class ClientInstance {
+public:
+    GuiData* getGuiData() const {
+        return *reinterpret_cast<GuiData* const*>(reinterpret_cast<std::uintptr_t>(this) + 0x650);
+    }
+};
+
 class MinecraftUIRenderContext {
 public:
     void** vtable{};                  // 0x00
-    void* clientInstance{};           // 0x08
+    ClientInstance* clientInstance{}; // 0x08
     ScreenContext* screenContext{};   // 0x10
     std::byte pad_18[0x40]{};         // 0x18 -> 0x58
     std::shared_ptr<mce::TextureGroup> textureGroup; // 0x58
