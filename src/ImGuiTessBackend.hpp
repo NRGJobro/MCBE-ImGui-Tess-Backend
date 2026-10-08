@@ -44,8 +44,6 @@ public:
         CrashLog::setStage("backend.initialize: build ImageBuffer");
         cg::ImageBuffer buffer(image);
         if (!buffer.isValid()) return false;
-        mce::TextureContainer container(buffer);
-
         ResourceLocation location("imgui_tess/font_atlas_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
         CrashLog::append(
             "Backend init: ctx=%p client=%p screen=%p textureGroup=%p sizeof(ResourceLocation)=0x%zX sizeof(ImageBuffer)=0x%zX sizeof(TextureContainer)=0x%zX\r\n",
@@ -61,12 +59,21 @@ public:
             width, height, byteCount,
             static_cast<unsigned long long>(signatures::imageResourceVtable()));
 
-        CrashLog::checkpoint("backend.initialize: TextureGroup::uploadTexture");
-        auto& uploaded = ctx->textureGroup->uploadTexture(
-            location, container, std::optional<std::string_view>{"MCBE ImGui Tess font"});
-        if (!uploaded.texture || !uploaded.texture->clientTexture.resourcePointerBlock) return false;
+        // Match the known-good MCBE ImGui path: upload an ImageBuffer, then ask the
+        // UI render context for the finished TexturePtr instead of depending on the
+        // returned BedrockTexture object's full ABI.
+        CrashLog::checkpoint("backend.initialize: TextureGroup::uploadTexture(ImageBuffer)");
+        (void)ctx->textureGroup->uploadTexture(location, buffer);
 
-        fontTexture_ = uploaded.texture->clientTexture;
+        CrashLog::checkpoint("backend.initialize: MinecraftUIRenderContext::getTexture");
+        auto loaded = ctx->getTexture(location, false);
+        if (!loaded.clientTexture ||
+            !loaded.clientTexture->clientTexture.resourcePointerBlock) {
+            return false;
+        }
+
+        fontTexturePtr_ = std::move(loaded);
+        fontTexture_ = fontTexturePtr_.clientTexture->clientTexture;
         io.Fonts->SetTexID(toTextureId(&fontTexture_));
         io.BackendRendererName = "mcbe_tessellator_26_52";
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -231,6 +238,7 @@ private:
 
     bool initialized_{};
     mce::MaterialPtr* material_{};
+    mce::TexturePtr fontTexturePtr_{};
     mce::ClientTexture fontTexture_{};
 };
 
