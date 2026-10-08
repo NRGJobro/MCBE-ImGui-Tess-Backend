@@ -90,13 +90,40 @@ public:
         material_ = mce::MaterialPtr::createMaterial(HashedString("ui_textured"));
         if (!material_) material_ = mce::MaterialPtr::createMaterial(HashedString("im_gui"));
 
-        // Keep the world panel's texture/color semantics identical to the
-        // already-correct 2D Tess backend. sign_text/entity_alphatest alpha-test
-        // the ImGui font atlas too aggressively and make glyphs look speckled.
-        worldMaterial_ = material_;
-        worldBackMaterial_ = mce::MaterialPtr::createMaterial(HashedString("ui_fill_color"));
-        if (!worldBackMaterial_)
-            worldBackMaterial_ = material_;
+        // World-space ImGui must use a depth-tested world material. Prefer an
+        // alpha-blended entity shader so the RGBA ImGui font atlas stays smooth,
+        // then fall back through other known depth-tested textured materials.
+        worldMaterialName_ = "entity_alphablend";
+        worldMaterial_ = mce::MaterialPtr::createMaterial(
+            HashedString("entity_alphablend"), true);
+
+        if (!worldMaterial_) {
+            worldMaterialName_ = "name_text_depth_tested";
+            worldMaterial_ = mce::MaterialPtr::createMaterial(
+                HashedString("name_text_depth_tested"));
+        }
+
+        if (!worldMaterial_) {
+            worldMaterialName_ = "sign_text";
+            worldMaterial_ = mce::MaterialPtr::createMaterial(
+                HashedString("sign_text"));
+        }
+
+        if (!worldMaterial_) {
+            worldMaterialName_ = "entity_alphatest";
+            worldMaterial_ = mce::MaterialPtr::createMaterial(
+                HashedString("entity_alphatest"), true);
+        }
+
+        if (!worldMaterial_) {
+            worldMaterialName_ = "ui_textured (fallback; no depth guarantee)";
+            worldMaterial_ = material_;
+        }
+
+        CrashLog::append(
+            "Backend init: world material=%s ptr=%p\r\n",
+            worldMaterialName_,
+            worldMaterial_);
 
         initialized_ = material_ != nullptr;
         CrashLog::setStage(initialized_ ? "backend.initialize: complete" : "backend.initialize: material failed");
@@ -111,11 +138,12 @@ public:
         io.Fonts->SetTexID(static_cast<ImTextureID>(0));
         material_ = nullptr;
         worldMaterial_ = nullptr;
-        worldBackMaterial_ = nullptr;
+        worldMaterialName_ = "none";
         initialized_ = false;
     }
 
     bool initialized() const { return initialized_; }
+    const char* worldMaterialName() const { return worldMaterialName_; }
 
     void render(ImDrawData* drawData, MinecraftUIRenderContext* ctx) {
         CrashLog::setStage("backend.render: validate draw data");
@@ -340,75 +368,6 @@ public:
     }
 
 
-    void renderWorldBack(
-        ScreenContext* screen,
-        const Vec3& renderOrigin,
-        const Vec3& panelCenter,
-        const Vec3& panelRight,
-        const Vec3& panelUp,
-        float panelWidth,
-        float aspectRatio) {
-
-        if (!initialized_ || !screen || !worldBackMaterial_ ||
-            panelWidth <= 0.01f || aspectRatio <= 0.01f)
-            return;
-
-        Tessellator* tess = screen->getTessellator();
-        if (!tess || tess->tessellating || tess->overridden)
-            return;
-
-        const float halfW = panelWidth * 0.5f;
-        const float halfH = panelWidth * aspectRatio * 0.5f;
-
-        const auto point = [&](float x, float y) -> Vec3 {
-            const Vec3 world{
-                panelCenter.x + panelRight.x * x + panelUp.x * y,
-                panelCenter.y + panelRight.y * x + panelUp.y * y,
-                panelCenter.z + panelRight.z * x + panelUp.z * y};
-            return {
-                world.x - renderOrigin.x,
-                world.y - renderOrigin.y,
-                world.z - renderOrigin.z};
-        };
-
-        const Vec3 tl = point(-halfW, +halfH);
-        const Vec3 tr = point(+halfW, +halfH);
-        const Vec3 br = point(+halfW, -halfH);
-        const Vec3 bl = point(-halfW, -halfH);
-
-        tess->begin(mce::PrimitiveMode::TriangleList, 6);
-        if (!tess->tessellating)
-            return;
-
-        tess->meshData.enableField(mce::VertexField::Color);
-        tess->isFormatFixed = true;
-
-        auto& positions = tess->meshData.positions;
-        auto& colors = tess->meshData.colors;
-        positions.reserve(6);
-        colors.reserve(6);
-
-        constexpr std::uint32_t backColor = 0xFF161616u;
-        const auto emit = [&](const Vec3& p) {
-            positions.push_back(p);
-            colors.push_back(backColor);
-        };
-
-        // Reverse of the front face so the rear side has a clean backing.
-        emit(tl); emit(tr); emit(br);
-        emit(tl); emit(br); emit(bl);
-        tess->count = 6;
-
-        mce::Mesh mesh{};
-        if (tess->endTransient(mesh)) {
-            mesh.renderMesh(
-                screen->toMeshContext(),
-                worldBackMaterial_,
-                fontTexture_);
-            tess->reclaimTransient(mesh);
-        }
-    }
-
 private:
     static ImTextureID toTextureId(const mce::ClientTexture* texture) {
         return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(texture));
@@ -495,7 +454,7 @@ private:
     bool initialized_{};
     mce::MaterialPtr* material_{};
     mce::MaterialPtr* worldMaterial_{};
-    mce::MaterialPtr* worldBackMaterial_{};
+    const char* worldMaterialName_{"none"};
     std::shared_ptr<mce::BedrockTextureData> fontTextureData_{};
     mce::ClientTexture fontTexture_{};
 };
