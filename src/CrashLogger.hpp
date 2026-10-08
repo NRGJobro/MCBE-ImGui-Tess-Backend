@@ -19,6 +19,8 @@ inline wchar_t g_directory[MAX_PATH]{};
 inline wchar_t g_sessionPath[MAX_PATH]{};
 inline wchar_t g_crashPath[MAX_PATH]{};
 inline wchar_t g_dumpPath[MAX_PATH]{};
+inline wchar_t g_lastStagePath[MAX_PATH]{};
+inline std::atomic_uint g_checkpointBudget{256};
 inline std::uintptr_t g_moduleBegin{};
 inline std::uintptr_t g_moduleEnd{};
 
@@ -29,6 +31,31 @@ inline thread_local std::uintptr_t tls_tessellator = 0;
 
 inline void setStage(const char* stage) noexcept {
     tls_stage = stage ? stage : "unknown";
+}
+
+inline void checkpoint(const char* stage) noexcept {
+    setStage(stage);
+    if (g_checkpointBudget.fetch_sub(1, std::memory_order_relaxed) == 0)
+        return;
+
+    char line[1024]{};
+    const int count = snprintf(
+        line, sizeof(line) - 1,
+        "Stage: %s\r\nMinecraftUIRenderContext: 0x%llX\r\nTessellator: 0x%llX\r\n",
+        tls_stage ? tls_stage : "unknown",
+        static_cast<unsigned long long>(tls_context),
+        static_cast<unsigned long long>(tls_tessellator));
+
+    HANDLE file = CreateFileW(
+        g_lastStagePath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return;
+    DWORD written = 0;
+    if (count > 0)
+        WriteFile(file, line, static_cast<DWORD>(count), &written, nullptr);
+    FlushFileBuffers(file);
+    CloseHandle(file);
 }
 
 inline void setPointers(const void* context, const void* tessellator = nullptr) noexcept {
@@ -215,8 +242,10 @@ inline bool install(HMODULE module) noexcept {
     swprintf_s(g_sessionPath, L"%ls\\session.log", g_directory);
     swprintf_s(g_crashPath, L"%ls\\crash-last.log", g_directory);
     swprintf_s(g_dumpPath, L"%ls\\crash-last.dmp", g_directory);
+    swprintf_s(g_lastStagePath, L"%ls\\last-stage.log", g_directory);
 
     DeleteFileW(g_sessionPath);
+    DeleteFileW(g_lastStagePath);
 
     const auto* base = reinterpret_cast<const std::uint8_t*>(module);
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
@@ -250,5 +279,6 @@ inline void uninstall() noexcept {
 inline const wchar_t* directory() noexcept { return g_directory; }
 inline const wchar_t* crashPath() noexcept { return g_crashPath; }
 inline const wchar_t* dumpPath() noexcept { return g_dumpPath; }
+inline const wchar_t* lastStagePath() noexcept { return g_lastStagePath; }
 
 } // namespace CrashLog
