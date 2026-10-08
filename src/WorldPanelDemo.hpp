@@ -29,10 +29,22 @@ public:
         Snapshot next{};
         next.origin = camera->origin;
         next.forward = rotate(camera->quat, {0.f, 0.f, -1.f});
-        next.right = rotate(camera->quat, {1.f, 0.f, 0.f});
-        next.up = rotate(camera->quat, {0.f, 1.f, 0.f});
+        if (!normalize(next.forward))
+            return;
 
-        if (!normalize(next.forward) || !normalize(next.right) || !normalize(next.up))
+        // Keep proof panels upright in Minecraft world-space. Rebuilding the
+        // lateral basis from forward + world-up avoids camera roll/layout quirks
+        // ever flipping the ImGui window vertically.
+        constexpr Vec3 worldUp{0.f, 1.f, 0.f};
+        next.right = cross(next.forward, worldUp);
+        if (!normalize(next.right)) {
+            next.right = rotate(camera->quat, {1.f, 0.f, 0.f});
+            if (!normalize(next.right))
+                return;
+        }
+
+        next.up = cross(next.right, next.forward);
+        if (!normalize(next.up))
             return;
 
         next.valid = finite(next.origin) && finite(next.forward) &&
